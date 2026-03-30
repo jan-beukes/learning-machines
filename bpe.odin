@@ -14,6 +14,8 @@ VOCAB_SIZE :: 1000
 
 // State
 freq_map: map[Pair]uint
+// NOTE: we could also do what the python implementations do and for each new token we map to an entire
+// string directly, this would take more memory unless we somehow free strings that get merged
 vocab: [dynamic]Pair
 
 find_most_frequent_pair :: proc(tokens: []Token) -> (Pair, uint) {
@@ -112,6 +114,8 @@ encode :: proc(input: string, allocator := context.allocator) -> []Token {
     return tokens[:]
 }
 
+// recursively decode the token mappings untill we find a token that corresponds to a single
+// character
 write_token :: proc(sb: ^strings.Builder, tok: Token) {
     pair := vocab[tok]
     if pair.x == tok {
