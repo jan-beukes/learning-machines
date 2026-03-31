@@ -110,7 +110,6 @@ encode :: proc(input: string, allocator := context.allocator) -> []Token {
 
         free_all(context.temp_allocator)
     }
-    fmt.println(decrease)
     return tokens[:]
 }
 
@@ -137,7 +136,7 @@ decode :: proc(tok_ids: []Token) -> string {
 }
 
 main :: proc() {
-    input_file := "bpe.txt"
+    input_file := "../the-verdict.txt"
     content, err := os.read_entire_file(input_file, context.allocator)
     if err != nil {
         fmt.eprintf("Could not open '%v'\n", input_file)
@@ -145,11 +144,8 @@ main :: proc() {
     }
 
     input := string(content)
-    fmt.println("Input:", input)
     fmt.println("Chars:", len(input))
     tokens := encode(input)
-    fmt.println(tokens)
     output := decode(tokens)
     fmt.println("Tokens:", len(tokens))
-    fmt.println("Output:", output)
 }
