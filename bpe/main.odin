@@ -14,7 +14,10 @@ print_random_tokens :: proc(t: Tokenizer, gen_max: int) {
     next: [dynamic]Pair
     defer delete(next)
 
-    token: Token = rand.uint32_range(0, u32(len(t.vocab)))
+    token: Token
+    for t.freqs[token] == 0 {
+        token = rand.uint32_range(0, u32(len(t.vocab)))
+    }
 
     for i in 0 ..< gen_max {
         strings.builder_reset(&sb)
@@ -40,6 +43,9 @@ print_random_tokens :: proc(t: Tokenizer, gen_max: int) {
         }
         if len(next) == 0 {
             token = rand.uint32_range(0, u32(len(t.vocab)))
+            for t.freqs[token] == 0 {
+                token = rand.uint32_range(0, u32(len(t.vocab)))
+            }
             continue
         }
 
