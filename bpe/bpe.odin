@@ -1,24 +1,33 @@
 package bpe
 
 import "core:fmt"
+import "core:log"
 import "core:strings"
 import "core:os"
 import "core:slice"
+import "core:encoding/cbor"
 import "core:mem"
+import "core:math/bits"
 
 Map_Entry :: slice.Map_Entry
 Token :: u32 // Token is an index into the vocab of pairs
 Pair :: [2]Token
 
-VOCAB_SIZE :: 1000
+BPE_HEADER :: "BPE67"
+VOCAB_SIZE :: 2000
 
-// State
 freq_map: map[Pair]uint
-// NOTE: we could also do what the python implementations do and for each new token we map to an entire
-// string directly, this would take more memory unless we somehow free strings that get merged
-vocab: [dynamic]Pair
 
-find_most_frequent_pair :: proc(tokens: []Token) -> (Pair, uint) {
+Tokenizer :: struct {
+    // this is only needed for making random token generation better
+    // NOTE: we could also do what the python implementations do and for each new token we map to an entire
+    // string directly, this would take more memory unless we somehow free strings that get merged
+    vocab: [dynamic]Pair,
+    merges: map[Pair]Token,
+    freqs: [dynamic]uint,
+}
+
+find_most_frequent_pair :: proc(t: ^Tokenizer, tokens: []Token) -> (Pair, uint) {
     if len(freq_map) == 0 {
         for i := 0; i < len(tokens) - 1; i += 1 {
             p := Pair{ tokens[i], tokens[i+1] }
@@ -38,8 +47,8 @@ find_most_frequent_pair :: proc(tokens: []Token) -> (Pair, uint) {
     return max.key, max.value
 }
 
-// replace all occurances of 'pair' with 'tok'
-replace_pair_with_token :: proc(tokens: ^[dynamic]Token, pair: Pair, tok: Token) {
+// merge all occurances of 'pair' into 'tok' while also updating the tokenizer's freqs
+merge_pairs :: proc(t: ^Tokenizer, tokens: ^[dynamic]Token, pair: Pair, tok: Token) {
     tokens_in := slice.clone(tokens[:], allocator = context.temp_allocator)
     tokens_out := tokens
     clear(tokens_out)
@@ -50,31 +59,34 @@ replace_pair_with_token :: proc(tokens: ^[dynamic]Token, pair: Pair, tok: Token)
         }
         p := Pair{ tokens_in[i], tokens_in[i+1] }
         if p == pair {
-            // decrease the pairs that the tokens made with tokens before and after this pair
-            // and increase the new pairs made
-            if len(tokens_out) > 0 {
-                pair_with_prev := Pair{ tokens_out[len(tokens_out)-1], p.x }
-                if freq_map[pair_with_prev] <= 1 {
-                    delete_key(&freq_map, pair_with_prev)
-                } else {
-                    freq_map[pair_with_prev] -= 1
+            // if t is nil then don't try to update the tokenizer
+            if t != nil {
+                // decrease the pairs that the tokens made with tokens before and after this pair
+                // and increase the new pairs made
+                if len(tokens_out) > 0 {
+                    pair_with_prev := Pair{ tokens_out[len(tokens_out)-1], p.x }
+                    if freq_map[pair_with_prev] <= 1 {
+                        delete_key(&freq_map, pair_with_prev)
+                    } else {
+                        freq_map[pair_with_prev] -= 1
+                    }
+                    pair_with_prev.y = tok
+                    count := freq_map[pair_with_prev] or_else 0
+                    freq_map[pair_with_prev] = count + 1
                 }
-                pair_with_prev.y = tok
-                count := freq_map[pair_with_prev] or_else 0
-                freq_map[pair_with_prev] = count + 1
-            }
-            if i + 2 < len(tokens_in) {
-                pair_with_next := Pair{ p.y, tokens_in[i+2]}
-                if freq_map[pair_with_next] <= 1 {
-                    delete_key(&freq_map, pair_with_next)
-                } else {
-                    freq_map[pair_with_next] -= 1
+                if i + 2 < len(tokens_in) {
+                    pair_with_next := Pair{ p.y, tokens_in[i+2]}
+                    if freq_map[pair_with_next] <= 1 {
+                        delete_key(&freq_map, pair_with_next)
+                    } else {
+                        freq_map[pair_with_next] -= 1
+                    }
+                    pair_with_next.x = tok
+                    count := freq_map[pair_with_next] or_else 0
+                    freq_map[pair_with_next] = count + 1
                 }
-                pair_with_next.x = tok
-                count := freq_map[pair_with_next] or_else 0
-                freq_map[pair_with_next] = count + 1
-            }
 
+            }
             append(tokens_out, tok)
             i += 2
         } else {
@@ -85,67 +97,136 @@ replace_pair_with_token :: proc(tokens: ^[dynamic]Token, pair: Pair, tok: Token)
     delete_key(&freq_map, pair)
 }
 
-encode :: proc(input: string, allocator := context.allocator) -> []Token {
-    text := transmute([]byte)input
-
-    // load initial ascii chars into vocab
-    for i in 0..<256 {
-        append(&vocab, Pair{ Token(i), 0 })
-    }
-
-    tokens: [dynamic]Token
-    for b in text {
-        append(&tokens, Token(b))
-    }
-
-    decrease := 0
-    for _ in len(vocab)..<VOCAB_SIZE {
-        most, count := find_most_frequent_pair(tokens[:])
-        if count == 1 {
-            break
-        }
-        new_tok := Token(len(vocab))
-        append(&vocab, most)
-        replace_pair_with_token(&tokens, most, new_tok)
-
-        free_all(context.temp_allocator)
-    }
-    return tokens[:]
-}
-
 // recursively decode the token mappings untill we find a token that corresponds to a single
 // character
-write_token :: proc(sb: ^strings.Builder, tok: Token) {
-    pair := vocab[tok]
+write_token :: proc(sb: ^strings.Builder, t: Tokenizer, tok: Token) {
+    pair := t.vocab[tok]
     if pair.x == tok {
         strings.write_rune(sb, rune(tok))
         return
     }
 
-    write_token(sb, pair.x)
-    write_token(sb, pair.y)
+    write_token(sb, t, pair.x)
+    write_token(sb, t, pair.y)
 }
 
-decode :: proc(tok_ids: []Token) -> string {
+
+tokenizer_decode :: proc(t: Tokenizer, tok_ids: []Token, show_tokens := false) -> string {
     sb: strings.Builder
     strings.builder_init(&sb)
+    colors := [?]string{"\033[31m", "\033[32m", "\033[34m"}
+    color_idx := 0
     for tok in tok_ids {
-        write_token(&sb, tok)
+        if show_tokens {
+            strings.write_string(&sb, colors[color_idx])
+            color_idx = (color_idx + 1) % len(colors)
+        }
+        write_token(&sb, t, tok)
+    }
+    if show_tokens {
+        strings.write_string(&sb, "\033[m")
     }
     return strings.to_string(sb)
 }
 
-main :: proc() {
-    input_file := "../the-verdict.txt"
-    content, err := os.read_entire_file(input_file, context.allocator)
+tokenizer_encode :: proc(t: Tokenizer, input: string, allocator := context.allocator) -> []Token {
+    text := transmute([]byte)input
+
+    tokens := make([dynamic]Token, allocator=allocator)
+    for b in text {
+        append(&tokens, Token(b))
+    }
+    for {
+        // Find the min index token to merge
+        min_id: Token = bits.U32_MAX
+        found_merge := false
+        for i := 0; i < len(tokens) - 1; i += 1 {
+            p := Pair{tokens[i], tokens[i+1]}
+            tok_id, ok := t.merges[p]
+            if ok {
+                found_merge = true
+                min_id = min(min_id, tok_id)
+            }
+            
+        }
+        if !found_merge {
+            break
+        }
+        pair := t.vocab[min_id]
+        merge_pairs(nil, &tokens, pair, min_id)
+    }
+    return tokens[:]
+}
+
+tokenizer_load :: proc(path: string, allocator := context.allocator) -> (t: Tokenizer, ok: bool) {
+    data, err := os.read_entire_file(path, allocator)
+    if err != nil {
+        return
+    }
+
+    cbor_err := cbor.unmarshal(data, &t)
+    if cbor_err != nil {
+        return
+    }
+
+    ok = true
+    return
+}
+
+tokenizer_save :: proc(path: string, t: Tokenizer) {
+    data, cbor_err := cbor.marshal_into_bytes(t)
+    defer delete(data)
+    if cbor_err != nil {
+        log.error("Could not marshal tokenizer:", cbor_err)
+        return
+    }
+
+    err := os.write_entire_file(path, data)
+    if err != nil {
+        fmt.println("Could not save tokenizer:", os.error_string(err))
+    }
+    log.info("Saved tokenizer to 'tokenizer.bpe'")
+}
+
+tokenizer_train :: proc(t: ^Tokenizer, input_file: string, allocator := context.allocator) {
+    content, err := os.read_entire_file(input_file, allocator)
+    defer delete(content)
     if err != nil {
         fmt.eprintf("Could not open '%v'\n", input_file)
         os.exit(1)
     }
+    text := transmute([]byte)content
+    // load initial ascii chars into vocab
+    for i in 0..<256 {
+        p := Pair{ Token(i), 0 }
+        append(&t.vocab, p)
+        t.merges[p] = Token(i)
+    }
 
-    input := string(content)
-    fmt.println("Chars:", len(input))
-    tokens := encode(input)
-    output := decode(tokens)
-    fmt.println("Tokens:", len(tokens))
+    t.freqs = make([dynamic]uint, 256)
+    tokens := make([dynamic]Token, allocator=allocator)
+    defer delete(tokens) // just for training
+    for b in text {
+        append(&tokens, Token(b))
+        t.freqs[b] += 1
+    }
+
+    clear(&freq_map)
+    for _ in len(t.vocab)..<VOCAB_SIZE {
+        most, count := find_most_frequent_pair(t, tokens[:])
+        if count == 1 {
+            break
+        }
+
+        new_tok := Token(len(t.vocab))
+        append(&t.vocab, most)
+        append(&t.freqs, count)
+        t.merges[most] = new_tok
+
+        merge_pairs(t, &tokens, most, new_tok)
+
+        free_all(context.temp_allocator)
+    }
+
+    tokenizer_save("tokenizer.bpe", t^)
 }

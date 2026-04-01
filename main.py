@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 def main():
-    with open("the-verdict.txt", "r", encoding="utf-8") as f:
+    with open("./data/the-verdict.txt", "r", encoding="utf-8") as f:
         raw_text = f.read()
 
     vocab_size = 50257
