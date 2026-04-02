@@ -2,89 +2,92 @@ package nn
 
 import "core:fmt"
 import "core:log"
+import mem "core:mem"
+import vmem "core:mem/virtual"
 import "core:os"
 
 ValueID :: int
+void :: struct{}
 
 Value :: struct {
     data: f32,
     grad: f32,
-    id: ValueID,
-    children: [2]ValueID,
+    children: [2]^Value,
+    label: string,
     op: rune,
 }
 
-@(private="file")
-values_map: [dynamic]Value // ValueId -> Value
+@(private="file") values_arena: vmem.Arena
+@(private="file") allocator: mem.Allocator
 
 values_init :: proc() {
     // register custom formatter
     fmt.set_user_formatters(new(map[typeid]fmt.User_Formatter))
     fmt.register_user_formatter(Value, val_user_formatter)
+    allocator = vmem.arena_allocator(&values_arena)
 }
 
 values_deinit :: proc() {
-    delete(values_map)
+    vmem.arena_destroy(&values_arena)
 }
 
-val :: proc(v: f32) -> Value {
-    ret := Value{
+val :: proc(v: f32, label := "") -> ^Value {
+    ret := new(Value, allocator)
+    ret^ = Value{
         data = v,
-        children = {-1, -1},
-        id = len(values_map),
+        label = label,
     }
-    append(&values_map, ret)
-
     return ret
 }
 
-val_add :: proc(a, b: Value) -> Value {
-    ret := Value{
+val_add :: proc(a, b: ^Value) -> ^Value {
+    ret := new(Value, allocator)
+    ret^ = Value{
         data = a.data + b.data,
-        id = len(values_map),
-        children = {a.id, b.id},
+        children = {a, b},
         op = '+'
     }
-    append(&values_map, ret)
-
     return ret
 }
 
-val_mul :: proc(a, b: Value) -> Value {
-    ret := Value{
+val_mul :: proc(a, b: ^Value) -> ^Value {
+    ret := new(Value, allocator)
+    ret^ = Value{
         data = a.data * b.data,
-        id = len(values_map),
-        children = {a.id, b.id},
+        children = {a, b},
         op = '*'
     }
-    append(&values_map, ret)
-
     return ret
 }
 
-val_sub :: proc(a, b: Value) -> Value {
-    ret := Value{
+val_sub :: proc(a, b: ^Value) -> ^Value {
+    ret := new(Value, allocator)
+    ret^ = Value{
         data = a.data - b.data,
-        id = len(values_map),
-        children = {a.id, b.id},
+        children = {a, b},
         op = '-'
     }
-    append(&values_map, ret)
-
     return ret
 }
 
 // renders to graph.svg
-val_draw_dot :: proc(val: Value) {
-    Edge :: [2]Value
+val_draw_dot :: proc(val: ^Value) {
+    Edge :: [2]^Value
     edges: [dynamic]Edge
-    defer delete(edges)
-    for id in 0..<len(values_map) {
-        for child_id in values_map[id].children {
-            if child_id < 0 do break
-            append(&edges, Edge{ values_map[child_id], values_map[id] })
+    nodes: map[^Value]void
+    defer { delete(edges); delete(nodes) }
+    build :: proc(v: ^Value, nodes: ^map[^Value]void, edges: ^[dynamic]Edge) {
+        if v in nodes {
+            return
+        }
+        nodes[v] = {}
+        for child in v.children {
+            if child == nil do break
+            append(edges, Edge{child, v})
+            build(child, nodes, edges)
         }
     }
+    build(val, &nodes, &edges)
 
     // create pipe
     r, w, err := os.pipe()
@@ -115,18 +118,17 @@ val_draw_dot :: proc(val: Value) {
 
     fmt.fprintln(w, "digraph {")
     fmt.fprintln(w, "  rankdir=LR;")
-    for id in 0..<len(values_map) {
-        v := values_map[id]
-        fmt.fprintfln(w, "  %v[label=\"{{ data: %f }}\",shape=\"record\"];", id, v.data)
+    for v in nodes {
+        fmt.fprintfln(w, "  %d[label=\"{{ %s | data: %f }}\",shape=\"record\"];", uintptr(v), v.label, v.data)
         if v.op != 0 {
-            op_id := len(values_map) + id + int(v.op)
-            fmt.fprintfln(w, "  %v[label=\"%v\"];", op_id, v.op)
-            fmt.fprintfln(w, "  %v -> %v;", op_id, id)
+            op_id := uintptr(v) + uintptr(v.op)
+            fmt.fprintfln(w, "  %d[label=\"%v\"];", op_id, v.op)
+            fmt.fprintfln(w, "  %d -> %d;", op_id, uintptr(v))
         }
     }
     for e in edges {
-        op_id := len(values_map) + e.y.id + int(e.y.op)
-        fmt.fprintfln(w, "  %v -> %v;", e.x.id, op_id)
+        op_id := uintptr(e.y) + uintptr(e.y.op)
+        fmt.fprintfln(w, "  %d -> %d;", uintptr(e.x), op_id)
     }
 
     fmt.fprintln(w, "}")

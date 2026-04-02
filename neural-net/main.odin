@@ -9,12 +9,12 @@ main :: proc() {
     values_init()
     defer values_deinit()
 
-    a := val(2.0)
-    b := val(-3.0)
-    c := val(10.0)
+    a := val(2.0, label="a")
+    b := val(-3.0, label="b")
+    c := val(10.0, label="c")
+    e := val_mul(a, b); e.label = "e"
+    d := val_add(e, c); d.label = "d"
 
-    d := val_add(val_mul(a, b), c)
-
-    fmt.println(d)
+    fmt.printfln("%d", uintptr(d))
     val_draw_dot(d)
 }
