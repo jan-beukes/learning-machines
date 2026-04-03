@@ -23,6 +23,7 @@ Value :: struct {
 values_init :: proc() {
     // register custom formatter
     fmt.set_user_formatters(new(map[typeid]fmt.User_Formatter))
+    fmt.register_user_formatter(^Value, val_user_formatter)
     fmt.register_user_formatter(Value, val_user_formatter)
     allocator = vmem.arena_allocator(&values_arena)
 }
@@ -142,8 +143,15 @@ val_draw_dot :: proc(val: ^Value) {
 }
 
 val_user_formatter :: proc(fi: ^fmt.Info, arg: any, verb: rune) -> bool {
-    val := arg.(Value)
-    data := val.data
+    data: f32
+    switch v in arg {
+    case Value:
+        data = arg.(Value).data
+    case ^Value:
+        data = arg.(^Value).data
+    case:
+        unreachable()
+    }
     switch verb {
     case 'v':
         fmt.fmt_string(fi, "Value(", verb)

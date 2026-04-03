@@ -14,7 +14,10 @@ main :: proc() {
     c := val(10.0, label="c")
     e := val_mul(a, b); e.label = "e"
     d := val_add(e, c); d.label = "d"
+    f := val(-2.0, label="f")
 
-    fmt.printfln("%d", uintptr(d))
-    val_draw_dot(d)
+    l := val_mul(d, f); l.label="L"
+
+    fmt.println(l)
+    val_draw_dot(l)
 }
