@@ -7,15 +7,15 @@ import "core:slice"
 import "core:strings"
 import "core:strconv"
 
-DataSet :: struct {
+Data_Set :: struct {
     inputs: [][]f32,
-    outputs: []int,
-    labels: []string,
+    labels: []int,
+    num_labels: int,
+    label_values: []string,
 }
 
-load_iris :: proc(path: string) -> DataSet {
-    content, err := os.read_entire_file(path, allocator=context.allocator)
-    defer delete(content)
+load_iris :: proc(path: string) -> Data_Set {
+    content, err := os.read_entire_file(path, allocator=context.temp_allocator)
     s: string = string(content)
     inputs: [dynamic][]f32
     outputs: [dynamic]int
@@ -43,7 +43,7 @@ load_iris :: proc(path: string) -> DataSet {
     }
 
     free_all(context.temp_allocator)
-    return DataSet{ inputs[:], outputs[:], labels[:] }
+    return Data_Set{ inputs[:], outputs[:], len(labels), labels[:] }
 }
 
 main :: proc() {
@@ -52,9 +52,9 @@ main :: proc() {
     iris := load_iris("iris/iris.data")
     model: Neural_Network
 
-    input_size, output_size := len(iris.inputs[0]), len(iris.labels)
+    input_size, output_size := len(iris.inputs[0]), iris.num_labels
     init(&model, {input_size, 6, output_size})
 
-    output: [3]f32
-    forward(model, iris.inputs[0], output[:])
+    batch := batch_create(iris.inputs, iris.labels, iris.num_labels)
+    learn(model, batch, 0.01)
 }

@@ -21,7 +21,40 @@ Layer :: struct {
 Neural_Network :: struct {
     config: Config,
     layers: []Layer,
+    input_size, output_size: int,
     largest_layer_size: int,
+}
+
+Data_Point :: struct {
+    input: []f32,
+    expected: []f32,
+    label: int,
+}
+
+// NOTE: This does not clone the inputs
+batch_create :: proc(inputs: [][]f32, labels: []int, num_labels: int) -> []Data_Point {
+    assert(len(inputs) == len(labels))
+    batch := make([]Data_Point, len(inputs))
+    for i in 0..<len(batch) {
+        batch[i].input = inputs[i]
+
+        label := labels[i]
+        batch[i].label = label
+
+        // one hot
+        assert(label < num_labels)
+        batch[i].expected = make([]f32, num_labels)
+        batch[i].expected[label] = 1.0
+    }
+
+    return batch
+}
+
+batch_destroy :: proc(batch: []Data_Point) {
+    for dp in batch {
+        delete(dp.expected)
+    }
+    delete(batch)
 }
 
 neuron_init :: proc(self: ^Neuron, num_in: int) {
@@ -54,7 +87,7 @@ neuron_activate :: proc(self: ^Neuron, x: []f32, activation: Activation, update_
     return a
 }
 
-forward :: proc(self: Neural_Network, input: []f32, output: []f32, upate_grad := false) {
+forward :: proc(self: Neural_Network, input: []f32, output: []f32, update_grad := false) {
     defer free_all(context.temp_allocator)
     layer_inputs := make([]f32, self.largest_layer_size, context.temp_allocator)
     layer_outputs := make([]f32, self.largest_layer_size, context.temp_allocator)
@@ -71,9 +104,17 @@ forward :: proc(self: Neural_Network, input: []f32, output: []f32, upate_grad :=
     copy(output, layer_outputs[:len(output)])
 }
 
-// learn :: proc(self: ^Neural_Network, training_data: []Data_Point, learn_rate: f32) {
-//
-// }
+learn :: proc(self: Neural_Network, training_data: []Data_Point, learn_rate: f32) {
+    output := make([]f32, self.output_size)
+    defer delete(output)
+    for data in training_data {
+        assert(len(data.input) == self.input_size)
+        assert(len(data.expected) == self.output_size)
+
+        forward(self, data.input, output, update_grad=true)
+        fmt.println(output)
+    }
+}
 
 // Initialize a neural network with the given layer sizes and config
 // The first size will be of the input
@@ -82,6 +123,9 @@ init :: proc(self: ^Neural_Network, layer_sizes: []int, config: Config = DEFAULT
 
     self.config = config
     self.largest_layer_size = slice.max(layer_sizes)
+    self.input_size = layer_sizes[0]
+    self.output_size = layer_sizes[len(layer_sizes)-1]
+
     layers: [dynamic]Layer
     // Create layers for all but first size since that is the input
     for i in 1..<len(layer_sizes) {
