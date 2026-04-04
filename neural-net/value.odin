@@ -2,6 +2,7 @@ package nn
 
 import "core:fmt"
 import "core:log"
+import "core:math"
 import mem "core:mem"
 import vmem "core:mem/virtual"
 import "core:os"
@@ -12,9 +13,9 @@ void :: struct{}
 Value :: struct {
     data: f32,
     grad: f32,
+    local_grad: f32,
     children: [2]^Value,
-    label: string,
-    op: rune,
+    op: string,
 }
 
 @(private="file") values_arena: vmem.Arena
@@ -32,43 +33,82 @@ values_deinit :: proc() {
     vmem.arena_destroy(&values_arena)
 }
 
-val :: proc(v: f32, label := "") -> ^Value {
-    ret := new(Value, allocator)
-    ret^ = Value{
+val :: proc{
+    val_new,
+    val_new_op,
+}
+
+val_new :: proc(v: f32) -> ^Value {
+    out := new(Value, allocator)
+    out^ = Value{
         data = v,
-        label = label,
     }
-    return ret
+    return out
+}
+
+val_new_op :: proc(v: f32, children: [2]^Value, op: string) -> ^Value {
+    out := new(Value, allocator)
+    out^ = Value{
+        data = v,
+        children = children,
+        op = op,
+    }
+    return out
 }
 
 val_add :: proc(a, b: ^Value) -> ^Value {
-    ret := new(Value, allocator)
-    ret^ = Value{
-        data = a.data + b.data,
-        children = {a, b},
-        op = '+'
-    }
-    return ret
+    out := val(a.data + b.data, {a, b}, "+")
+    a.local_grad += 1.0
+    b.local_grad += 1.0
+    return out
 }
 
 val_mul :: proc(a, b: ^Value) -> ^Value {
-    ret := new(Value, allocator)
-    ret^ = Value{
-        data = a.data * b.data,
-        children = {a, b},
-        op = '*'
-    }
-    return ret
+    out := val(a.data * b.data, {a, b}, "*")
+    a.local_grad += b.data
+    b.local_grad += a.data
+    return out
 }
 
 val_sub :: proc(a, b: ^Value) -> ^Value {
-    ret := new(Value, allocator)
-    ret^ = Value{
-        data = a.data - b.data,
-        children = {a, b},
-        op = '-'
+    out := val(a.data - b.data, {a, b}, "-")
+    a.local_grad += 1.0
+    b.local_grad += -1.0
+    return out
+}
+
+val_pow :: proc(a: ^Value, b: f32) -> ^Value {
+    op := fmt.aprintf("^(%v)", b, allocator=allocator)
+    out := val(math.pow(a.data, b), [2]^Value{a, nil}, op)
+    a.local_grad += b * math.pow(a.data, b - 1)
+    return out
+}
+
+val_relu :: proc(v: ^Value) -> ^Value {
+    out := val(v.data < 0 ? 0 : v.data, {v, nil}, "ReLu")
+    v.local_grad += out.data > 0 ? 1.0 : 0.0
+    return out
+}
+
+// back propogate throught the graph, applying chain rule by mutiplying local derivatives
+val_backwards :: proc(v: ^Value) {
+    q: [dynamic]^Value
+
+    v.grad = 1.0
+    append(&q, v)
+    for len(q) > 0 {
+        node := pop(&q)
+        grad := node.grad
+        a, b := node.children.x, node.children.y
+        if a != nil {
+            a.grad = grad * a.local_grad
+            append(&q, a)
+        }
+        if b != nil {
+            b.grad = grad * b.local_grad
+            append(&q, b)
+        }
     }
-    return ret
 }
 
 // renders to graph.svg
@@ -117,18 +157,27 @@ val_draw_dot :: proc(val: ^Value) {
         return
     }
 
+    get_op_id :: proc(op: string) -> uintptr {
+        sum: uintptr
+        for r in op {
+            sum += uintptr(r)
+        }
+        return sum
+    }
+
     fmt.fprintln(w, "digraph {")
     fmt.fprintln(w, "  rankdir=LR;")
     for v in nodes {
-        fmt.fprintfln(w, "  %d[label=\"{{ %s | data: %f }}\",shape=\"record\"];", uintptr(v), v.label, v.data)
-        if v.op != 0 {
-            op_id := uintptr(v) + uintptr(v.op)
+        fmt.fprintfln(w, "  %d[label=\"{{ data: %f | grad: %f }}\",shape=\"record\"];",
+            uintptr(v), v.data, v.grad)
+        if v.op != "" {
+            op_id := uintptr(v) + get_op_id(v.op)
             fmt.fprintfln(w, "  %d[label=\"%v\"];", op_id, v.op)
             fmt.fprintfln(w, "  %d -> %d;", op_id, uintptr(v))
         }
     }
     for e in edges {
-        op_id := uintptr(e.y) + uintptr(e.y.op)
+        op_id := uintptr(e.y) + get_op_id(e.y.op)
         fmt.fprintfln(w, "  %d -> %d;", uintptr(e.x), op_id)
     }
 
