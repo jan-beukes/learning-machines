@@ -1,6 +1,8 @@
 package nn
 
-DEFAULT_CONFIG :: Config{ .SGD, MEAN_SQUARED_ERROR, RELU }
+import "core:math"
+
+DEFAULT_CONFIG :: Config{ .SGD, MEAN_SQUARED_ERROR, SIGMOID }
 
 // Return the value as well as the derivative
 
@@ -8,9 +10,9 @@ Optmizer :: enum {
     SGD,
 }
 
-Loss :: struct {
-    function: #type proc(y, ypred: []f32) -> f32,
-    derivative: #type proc(y, ypred: []f32) -> f32,
+Cost :: struct {
+    function: proc(y, ypred: []f32) -> f32,
+    derivative: proc(y, ypred: f32) -> f32,
 }
 
 Activation :: struct {
@@ -20,37 +22,44 @@ Activation :: struct {
 
 Config :: struct {
     optimizer: Optmizer,
-    loss: Loss,
+    cost: Cost,
     activation: Activation,
 }
 
-// Loss functions
+// Cost functions
 
-MEAN_SQUARED_ERROR :: Loss{
+MEAN_SQUARED_ERROR :: Cost{
     function = proc(y, ypred: []f32) -> f32 {
         assert(len(y) == len(ypred))
-        loss: f32
+        cost: f32
         for i in 0..<len(y) {
-            diff := y[i] - ypred[i]
-            loss += diff*diff
+            diff := ypred[i] - y[i]
+            cost += diff*diff
         }
-        return loss
+        return 0.5*cost
     },
-    derivative = proc(y, ypred: []f32) -> f32 {
-        assert(len(y) == len(ypred))
-        d: f32
-        for i in 0..<len(y) {
-            d += -2*(y[i] - ypred[i])
-        }
-        return d
+    derivative = proc(y, ypred: f32) -> f32 {
+        return ypred - y
     }
 }
 
+// Leaky ReLu
 RELU :: Activation{
     function = proc(x: f32) -> f32 {
-        return x > 0.0 ? x : 0.0
+        return max(0.1*x, x)
     },
     derivative = proc(x: f32) -> f32 {
-        return x > 0.0 ? 1.0 : 0.0
+        return x > 0.0 ? 1.0 : 0.01
+    }
+}
+
+SIGMOID :: Activation{
+    function = proc(x: f32) -> f32 {
+        return 1.0 / (1.0 + math.exp(-x))
+
+    },
+    derivative = proc(x: f32) -> f32 {
+        sig := 1.0 / (1.0 + math.exp(-x))
+        return sig * (1.0 - sig)
     }
 }

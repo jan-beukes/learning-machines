@@ -4,11 +4,15 @@ import "core:fmt"
 import "core:slice"
 import "core:math"
 import "core:math/rand"
+import "core:mem"
+import vmem "core:mem/virtual"
 
 Neuron :: struct {
     weights: []f32,
-    weight_grads: []f32, // local derivatives
     bias: f32,
+    // local derivatives
+    weight_grads: []f32,
+    activation_grad: f32,
     bias_grad: f32,
 }
 
@@ -23,6 +27,7 @@ Neural_Network :: struct {
     layers: []Layer,
     input_size, output_size: int,
     largest_layer_size: int,
+    arena: vmem.Arena,
 }
 
 Data_Point :: struct {
@@ -32,7 +37,7 @@ Data_Point :: struct {
 }
 
 // NOTE: This does not clone the inputs
-batch_create :: proc(inputs: [][]f32, labels: []int, num_labels: int) -> []Data_Point {
+data_create :: proc(inputs: [][]f32, labels: []int, num_labels: int) -> []Data_Point {
     assert(len(inputs) == len(labels))
     batch := make([]Data_Point, len(inputs))
     for i in 0..<len(batch) {
@@ -47,10 +52,11 @@ batch_create :: proc(inputs: [][]f32, labels: []int, num_labels: int) -> []Data_
         batch[i].expected[label] = 1.0
     }
 
+    rand.shuffle(batch[:])
     return batch
 }
 
-batch_destroy :: proc(batch: []Data_Point) {
+data_destroy :: proc(batch: []Data_Point) {
     for dp in batch {
         delete(dp.expected)
     }
@@ -68,7 +74,7 @@ neuron_init :: proc(self: ^Neuron, num_in: int) {
 }
 
 // So we do half of the gradient updating here instead of storing z values
-neuron_activate :: proc(self: ^Neuron, x: []f32, activation: Activation, update_grad := true) -> f32 {
+neuron_activate :: proc(self: ^Neuron, x: []f32, activation: Activation, update_grad := false) -> f32 {
     assert(len(self.weights) == len(x))
     z: f32 = 0.0
     for i in 0..<len(x) {
@@ -77,9 +83,10 @@ neuron_activate :: proc(self: ^Neuron, x: []f32, activation: Activation, update_
     z += self.bias
 
     if update_grad {
-        self.bias_grad = activation.derivative(z)
+        self.activation_grad = activation.derivative(z)
+        self.bias_grad = self.activation_grad
         for i in 0..<len(x) {
-            self.weight_grads[i] = activation.derivative(z) * x[i]
+            self.weight_grads[i] = self.activation_grad * x[i]
         }
     }
 
@@ -101,25 +108,93 @@ forward :: proc(self: Neural_Network, input: []f32, output: []f32, update_grad :
         }
         copy(layer_inputs, layer_outputs)
     }
-    copy(output, layer_outputs[:len(output)])
+    copy(output, layer_outputs)
+}
+
+backward :: proc(self: Neural_Network, cost_grads: []f32) {
+    // output layer
+    output_layer := self.layers[len(self.layers)-1]
+    assert(len(cost_grads) == len(output_layer.neurons))
+    for i in 0..<len(output_layer.neurons) {
+        neuron := &output_layer.neurons[i]
+        for &wg in neuron.weight_grads {
+            wg *= cost_grads[i]
+        }
+        neuron.activation_grad *= cost_grads[i]
+        neuron.bias_grad *= cost_grads[i]
+    }
+
+    // hidden layers
+    for i := len(self.layers) - 2; i > 0; i -= 1 {
+        layer := self.layers[i]
+        for i in 0..<len(layer.neurons) {
+            neuron := &layer.neurons[i]
+            a_cost_grad: f32
+            for next in self.layers[i+1].neurons {
+                // i is the input corresponding the the current neuron
+                a_cost_grad += next.weights[i] * next.activation_grad
+            }
+            neuron.activation_grad *= a_cost_grad
+            neuron.bias_grad *= a_cost_grad
+            for &wg in neuron.weight_grads {
+                wg *= a_cost_grad
+            }
+        }
+    }
 }
 
 learn :: proc(self: Neural_Network, training_data: []Data_Point, learn_rate: f32) {
+
     output := make([]f32, self.output_size)
-    defer delete(output)
+    cost_grads := make([]f32, self.output_size)
+    defer { delete(output); delete(cost_grads) }
+    cost: f32
     for data in training_data {
         assert(len(data.input) == self.input_size)
         assert(len(data.expected) == self.output_size)
-
         forward(self, data.input, output, update_grad=true)
-        fmt.println(output)
+        cost += self.config.cost.function(data.expected, output)
+        for i in 0..<len(output) {
+            cost_grads[i] += self.config.cost.derivative(data.expected[i], output[i])
+        }
     }
+    fmt.println("Cost:", cost)
+    // backpropogate
+    backward(self, cost_grads)
+    // gradient decent and reset grads
+    for layer in self.layers {
+        for &neuron in layer.neurons {
+            neuron.bias += -learn_rate*neuron.bias_grad
+            for i in 0..<len(neuron.weights) {
+                neuron.weights[i] += -learn_rate*neuron.weight_grads[i]
+                neuron.weight_grads[i] = 0.0
+            }
+            neuron.bias_grad = 0.0
+            neuron.activation_grad = 0.0
+        }
+    }
+}
+
+evaluate :: proc(self: Neural_Network, testing_data: []Data_Point) -> f32 {
+    num_correct := 0
+    num_inputs := len(testing_data)
+    output := make([]f32, self.output_size)
+    defer delete(output)
+    for data in testing_data {
+        forward(self, data.input, output)
+        predicted := slice.max_index(output)
+        if predicted == data.label {
+            num_correct += 1
+        }
+    }
+    return f32(num_correct) / f32(num_inputs)
 }
 
 // Initialize a neural network with the given layer sizes and config
 // The first size will be of the input
 init :: proc(self: ^Neural_Network, layer_sizes: []int, config: Config = DEFAULT_CONFIG) {
     assert(self != nil)
+    context.allocator = vmem.arena_allocator(&self.arena)
 
     self.config = config
     self.largest_layer_size = slice.max(layer_sizes)
@@ -141,6 +216,6 @@ init :: proc(self: ^Neural_Network, layer_sizes: []int, config: Config = DEFAULT
     self.layers = layers[:]
 }
 
-deinit :: proc(self: Neural_Network) {
-    unimplemented("deinit")
+deinit :: proc(self: ^Neural_Network) {
+    vmem.arena_destroy(&self.arena)
 }

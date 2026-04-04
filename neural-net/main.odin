@@ -7,19 +7,12 @@ import "core:slice"
 import "core:strings"
 import "core:strconv"
 
-Data_Set :: struct {
-    inputs: [][]f32,
-    labels: []int,
-    num_labels: int,
-    label_values: []string,
-}
-
-load_iris :: proc(path: string) -> Data_Set {
+load_iris :: proc(path: string) -> ([]Data_Point, []string) {
     content, err := os.read_entire_file(path, allocator=context.temp_allocator)
     s: string = string(content)
     inputs: [dynamic][]f32
-    outputs: [dynamic]int
-    labels: [dynamic]string
+    labels: [dynamic]int
+    names: [dynamic]string
     for line in strings.split_lines_iterator(&s) {
         items := strings.split(line, ",", allocator = context.temp_allocator)
         row := make([]f32, 4)
@@ -32,29 +25,35 @@ load_iris :: proc(path: string) -> Data_Set {
             }
         }
         append(&inputs, row)
-        label := items[4]
-        idx, found := slice.linear_search(labels[:], label)
+        name := items[4]
+        idx, found := slice.linear_search(names[:], name)
         if found {
-            append(&outputs, idx)
+            append(&labels, idx)
         } else {
-            append(&outputs, len(labels))
-            append(&labels, strings.clone(label))
+            append(&labels, len(names))
+            append(&names, strings.clone(name))
         }
     }
 
     free_all(context.temp_allocator)
-    return Data_Set{ inputs[:], outputs[:], len(labels), labels[:] }
+    return data_create(inputs[:], labels[:], len(names)), names[:]
 }
 
 main :: proc() {
     context.logger = log.create_console_logger(opt=log.Options{.Level, .Terminal_Color})
 
-    iris := load_iris("iris/iris.data")
+    iris, names := load_iris("iris/iris.data")
+
+    input_size, output_size := len(iris[0].input), len(iris[0].expected)
+
     model: Neural_Network
-
-    input_size, output_size := len(iris.inputs[0]), iris.num_labels
     init(&model, {input_size, 6, output_size})
+    defer deinit(&model)
 
-    batch := batch_create(iris.inputs, iris.labels, iris.num_labels)
-    learn(model, batch, 0.01)
+    epochs := 100
+    for i in 0..<epochs {
+        learn(model, iris, 0.1)
+    }
+
+    fmt.println("Accuracy:", evaluate(model, iris))
 }
