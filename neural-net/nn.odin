@@ -35,7 +35,7 @@ neuron_init :: proc(self: ^Neuron, num_in: int) {
 }
 
 // So we do half of the gradient updating here instead of storing z values
-neuron_activate :: proc(self: ^Neuron, x: []f32, activation: Activation) -> f32 {
+neuron_activate :: proc(self: ^Neuron, x: []f32, activation: Activation, update_grad := true) -> f32 {
     assert(len(self.weights) == len(x))
     z: f32 = 0.0
     for i in 0..<len(x) {
@@ -43,16 +43,18 @@ neuron_activate :: proc(self: ^Neuron, x: []f32, activation: Activation) -> f32 
     }
     z += self.bias
 
-    self.bias_grad = activation.derivative(z)
-    for i in 0..<len(x) {
-        self.weight_grads[i] = activation.derivative(z) * x[i]
+    if update_grad {
+        self.bias_grad = activation.derivative(z)
+        for i in 0..<len(x) {
+            self.weight_grads[i] = activation.derivative(z) * x[i]
+        }
     }
 
     a := activation.function(z)
     return a
 }
 
-forward :: proc(self: Neural_Network, input: []f32, output: []f32) {
+forward :: proc(self: Neural_Network, input: []f32, output: []f32, upate_grad := false) {
     defer free_all(context.temp_allocator)
     layer_inputs := make([]f32, self.largest_layer_size, context.temp_allocator)
     layer_outputs := make([]f32, self.largest_layer_size, context.temp_allocator)
@@ -61,7 +63,8 @@ forward :: proc(self: Neural_Network, input: []f32, output: []f32) {
     for layer in self.layers {
         for i in 0..<len(layer.neurons) {
             inputs := layer_inputs[:layer.num_in]
-            layer_outputs[i] = neuron_activate(&layer.neurons[i], inputs, self.config.activation)
+            layer_outputs[i] = neuron_activate(&layer.neurons[i], inputs,
+                self.config.activation, update_grad)
         }
         copy(layer_inputs, layer_outputs)
     }
