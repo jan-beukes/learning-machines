@@ -1,4 +1,4 @@
-package nn
+package value
 
 import "core:fmt"
 import "core:log"
@@ -13,6 +13,9 @@ void :: struct{}
 Value :: struct {
     data: f32,
     grad: f32,
+ // NOTE: instead of having a closure (We don't get that for free in odin) 
+ // that can compute the gradient during back prop we store the local gradient    local_grad: f32,
+ // to then be multiplied with                                                                    
     local_grad: f32,
     children: [2]^Value,
     op: string,
