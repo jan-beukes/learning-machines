@@ -4,11 +4,7 @@ package nn
 
 import "core:math"
 
-DEFAULT_CONFIG :: Config{ .SGD, MEAN_SQUARED_ERROR, SIGMOID }
-
-Optmizer :: enum {
-    SGD,
-}
+DEFAULT_CONFIG :: Config{ MEAN_SQUARED_ERROR, SIGMOID, SOFTMAX }
 
 Cost :: struct {
     function: proc(ypred, y: []f32) -> f32,
@@ -16,14 +12,14 @@ Cost :: struct {
 }
 
 Activation :: struct {
-    function: proc(x: f32) -> f32,
-    derivative: proc(x: f32) -> f32,
+    function: proc(inputs: []f32, idx: int) -> f32,
+    derivative: proc(inputs: []f32, idx: int) -> f32,
 }
 
 Config :: struct {
-    optimizer: Optmizer,
     cost: Cost,
     activation: Activation,
+    output_activation: Activation,
 }
 
 // Cost functions
@@ -43,23 +39,52 @@ MEAN_SQUARED_ERROR :: Cost{
     }
 }
 
-// Leaky ReLu
-RELU :: Activation{
-    function = proc(x: f32) -> f32 {
-        return max(0.1*x, x)
+// Activations
+
+TANH :: Activation{
+    function = proc(inputs: []f32, idx: int) -> f32 {
+        return math.tanh(inputs[idx])
     },
-    derivative = proc(x: f32) -> f32 {
-        return x > 0.0 ? 1.0 : 0.01
+    derivative = proc(inputs: []f32, idx: int) -> f32 {
+        cosh := math.cosh(inputs[idx])
+        return 1.0 / (cosh * cosh)
+    }
+}
+
+RELU :: Activation{
+    function = proc(inputs: []f32, idx: int) -> f32 {
+        return max(0, inputs[idx])
+    },
+    derivative = proc(inputs: []f32, idx: int) -> f32 {
+        return inputs[idx] > 0.0 ? 1.0 : 0.0
     }
 }
 
 SIGMOID :: Activation{
-    function = proc(x: f32) -> f32 {
-        return 1.0 / (1.0 + math.exp(-x))
+    function = proc(inputs: []f32, idx: int) -> f32 {
+        return 1.0 / (1.0 + math.exp(-inputs[idx]))
 
     },
-    derivative = proc(x: f32) -> f32 {
-        sig := 1.0 / (1.0 + math.exp(-x))
+    derivative = proc(inputs: []f32, idx: int) -> f32 {
+        sig := 1.0 / (1.0 + math.exp(-inputs[idx]))
         return sig * (1.0 - sig)
+    }
+}
+
+SOFTMAX :: Activation{
+    function = proc(inputs: []f32, idx: int) -> f32 {
+        sum: f32 = 0
+        for input in inputs {
+            sum += math.exp(input)
+        }
+        return math.exp(inputs[idx]) / sum
+    },
+    derivative = proc(inputs: []f32, idx: int) -> f32 {
+        sum: f32 = 0
+        for input in inputs {
+            sum += math.exp(input)
+        }
+        x := math.exp(inputs[idx])
+        return (x*sum - x*x) / (sum*sum)
     }
 }

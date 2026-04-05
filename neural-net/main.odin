@@ -47,12 +47,14 @@ main :: proc() {
     input_size, output_size := len(iris[0].input), len(iris[0].expected)
 
     model: Neural_Network
-    init(&model, {input_size, 16, 8, output_size})
+    config := Config{ MEAN_SQUARED_ERROR, TANH, SOFTMAX }
+    init(&model, {input_size, 8, 8, output_size}, config)
     defer deinit(&model)
 
-    epochs := 5000
+    epochs := 100
+    learn_rate := 0.01 * f32(len(iris))
     for i in 0..<epochs {
-        cost := learn(model, iris, 0.2)
+        cost := learn(model, iris, learn_rate)
         fmt.printfln("Epoch(%v): Cost = %v", i, cost)
     }
 
