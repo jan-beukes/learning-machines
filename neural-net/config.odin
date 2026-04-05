@@ -1,18 +1,18 @@
+// Configuration for the neural network
+// Optimizer, Cost function, Activation function
 package nn
 
 import "core:math"
 
 DEFAULT_CONFIG :: Config{ .SGD, MEAN_SQUARED_ERROR, SIGMOID }
 
-// Return the value as well as the derivative
-
 Optmizer :: enum {
     SGD,
 }
 
 Cost :: struct {
-    function: proc(y, ypred: []f32) -> f32,
-    derivative: proc(y, ypred: f32) -> f32,
+    function: proc(ypred, y: []f32) -> f32,
+    derivative: proc(ypred, y: f32) -> f32,
 }
 
 Activation :: struct {
@@ -29,7 +29,7 @@ Config :: struct {
 // Cost functions
 
 MEAN_SQUARED_ERROR :: Cost{
-    function = proc(y, ypred: []f32) -> f32 {
+    function = proc(ypred, y: []f32) -> f32 {
         assert(len(y) == len(ypred))
         cost: f32
         for i in 0..<len(y) {
@@ -38,7 +38,7 @@ MEAN_SQUARED_ERROR :: Cost{
         }
         return 0.5*cost
     },
-    derivative = proc(y, ypred: f32) -> f32 {
+    derivative = proc(ypred, y: f32) -> f32 {
         return ypred - y
     }
 }

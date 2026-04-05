@@ -36,7 +36,7 @@ load_iris :: proc(path: string) -> ([]Data_Point, []string) {
     }
 
     free_all(context.temp_allocator)
-    return data_create(inputs[:], labels[:], len(names)), names[:]
+    return batch_create(inputs[:], labels[:], len(names)), names[:]
 }
 
 main :: proc() {
@@ -50,9 +50,10 @@ main :: proc() {
     init(&model, {input_size, 6, output_size})
     defer deinit(&model)
 
-    epochs := 100
+    epochs := 8000
     for i in 0..<epochs {
-        learn(model, iris, 0.1)
+        cost := learn(model, iris, 0.2)
+        fmt.printfln("Epoch(%v): Cost = %v", i, cost)
     }
 
     fmt.println("Accuracy:", evaluate(model, iris))
