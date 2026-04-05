@@ -1,1 +1,10 @@
 # WIP Neural network library
+
+## example datasets
+- [Iris](archive.ics.uci.edu/dataset/53/iris)
+- [Cifar-10](https://www.cs.toronto.edu/~kriz/cifar.html)
+
+## References
+https://youtu.be/hfMk-kjRv4c
+
+https://youtube.com/playlist?list=PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi

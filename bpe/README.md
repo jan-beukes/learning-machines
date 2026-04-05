@@ -1,4 +1,4 @@
-# Very simple BPE implementation for better understanding
+# Very simple BPE implementation
 
 Usage
 ```bash

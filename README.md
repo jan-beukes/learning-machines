@@ -1,6 +1,4 @@
-# Some ML stuff
-
-Right now just Neural Network and llm stuff
+# Collection of machine learning projects
 
 ## References:
 

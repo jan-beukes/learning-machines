@@ -55,8 +55,6 @@ main :: proc() {
     learn_rate := 0.01 * f32(len(iris))
     for i in 0..<epochs {
         cost := learn(model, iris, learn_rate)
-        fmt.printfln("Epoch(%v): Cost = %v", i, cost)
+        fmt.printfln("Epoch(%v): Accuracy = %v", i, evaluate(model, iris))
     }
-
-    fmt.println("Accuracy:", evaluate(model, iris))
 }

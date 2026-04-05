@@ -326,6 +326,14 @@ evaluate :: proc(self: Neural_Network, testing_data: []Data_Point) -> f32 {
     return f32(num_correct) / f32(num_inputs)
 }
 
+save_to_file :: proc(self: Neural_Network, path: string) {
+
+}
+
+load_from_file :: proc(path: string) -> Neural_Network {
+
+}
+
 // Initialize a neural network with the given layer sizes and config
 // The first size will be of the input
 init :: proc(self: ^Neural_Network, layer_sizes: []int, config: Config = DEFAULT_CONFIG) {
