@@ -4,7 +4,10 @@ import "core:fmt"
 import "core:slice"
 import "core:math"
 import "core:math/rand"
+import "core:os"
 import "core:mem"
+import "core:thread"
+import "core:sync"
 import vmem "core:mem/virtual"
 
 Layer :: struct {
@@ -15,6 +18,15 @@ Layer :: struct {
     weight_grads: [][]f32,
     biases: []f32,
     bias_grads: []f32,
+    mutex: sync.Mutex,
+}
+
+Neural_Network :: struct {
+    config: Config,
+    layers: []Layer,
+    input_size, output_size: int,
+    largest_layer_size: int,
+    arena: vmem.Arena,
 }
 
 // This is used to store values during training forward pass that are needed when we perform
@@ -27,13 +39,6 @@ Learn_Data :: struct {
     node_values: []f32, // da(i)/dz(i) * dc/da(i) * ... da(L)/dz(L) * dc/da(L)
 }
 
-Neural_Network :: struct {
-    config: Config,
-    layers: []Layer,
-    input_size, output_size: int,
-    largest_layer_size: int,
-    arena: vmem.Arena,
-}
 
 Data_Point :: struct {
     input: []f32,
@@ -41,26 +46,23 @@ Data_Point :: struct {
     label: int,
 }
 
-learn_data_create :: proc(layers: []Layer) -> []Learn_Data {
-    learn_data := make([]Learn_Data, len(layers))
-    for i in 0..<len(layers) {
-        learn_data[i].inputs = make([]f32, layers[i].num_in)
-        learn_data[i].activations = make([]f32, layers[i].num_out)
-        learn_data[i].weighted_inputs = make([]f32, layers[i].num_out)
-        learn_data[i].node_values = make([]f32, layers[i].num_out)
-    }
-    return learn_data
+Learn_Task :: struct {
+    network: Neural_Network,
+    data_point: Data_Point,
+    cost: f32,
+    arena: vmem.Arena,
 }
 
-// TODO: replace with arena
-learn_data_destroy :: proc(learn_data: []Learn_Data) {
-    for layer_data in learn_data {
-        delete(layer_data.inputs)
-        delete(layer_data.weighted_inputs)
-        delete(layer_data.activations)
-        delete(layer_data.node_values)
+// This should probably be used with an arena allocator
+learn_data_create :: proc(layers: []Layer, allocator := context.allocator) -> []Learn_Data {
+    learn_data := make([]Learn_Data, len(layers), allocator)
+    for i in 0..<len(layers) {
+        learn_data[i].inputs = make([]f32, layers[i].num_in, allocator)
+        learn_data[i].activations = make([]f32, layers[i].num_out, allocator)
+        learn_data[i].weighted_inputs = make([]f32, layers[i].num_out, allocator)
+        learn_data[i].node_values = make([]f32, layers[i].num_out, allocator)
     }
-    delete(learn_data)
+    return learn_data
 }
 
 // NOTE: This does not clone the inputs
@@ -131,6 +133,15 @@ layer_calculate_output :: proc(self: Layer, input, output: []f32, activation: Ac
     }
 }
 
+// update the layer's gradients
+layer_update_gradients :: proc(self: ^Layer, neuron: int, layer_learn: Learn_Data) {
+    for j in 0..<self.num_in {
+        dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
+        self.weight_grads[neuron][j] += dcost_dweight
+    }
+    self.bias_grads[neuron] += layer_learn.node_values[neuron]
+}
+
 apply_gradients :: proc(self: Neural_Network, learn_rate: f32) {
     // apply gradients and reset to zero
     for layer in self.layers {
@@ -148,7 +159,7 @@ apply_gradients :: proc(self: Neural_Network, learn_rate: f32) {
 update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Learn_Data) -> f32 {
     // Last layer
     last_layer_learn := learn_data[len(learn_data)-1]
-    last_layer := self.layers[len(self.layers)-1]
+    last_layer := &self.layers[len(self.layers)-1]
     cost := self.config.cost.function(last_layer_learn.activations, expected)
     for i in 0..<last_layer.num_out {
         cost_derivative := self.config.cost.derivative(last_layer_learn.activations[i], expected[i])
@@ -156,18 +167,13 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
         activation_derivative := self.config.activation.derivative(weighted_input)
         last_layer_learn.node_values[i] = activation_derivative * cost_derivative 
 
-        // update the layer's gradients
-        for j in 0..<last_layer.num_in {
-            dcost_dweight := last_layer_learn.inputs[j] * last_layer_learn.node_values[i]
-            last_layer.weight_grads[i][j] += dcost_dweight
-        }
-        last_layer.bias_grads[i] += last_layer_learn.node_values[i]
+        layer_update_gradients(last_layer, i, last_layer_learn)
     }
 
     // Hidden Layers
     old_node_values := last_layer_learn.node_values
     for i := len(self.layers) - 2; i > 0; i -= 1 {
-        layer := self.layers[i]
+        layer := &self.layers[i]
         next_layer := self.layers[i+1]
         layer_learn := learn_data[i]
 
@@ -184,11 +190,7 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
             layer_learn.node_values[i] = node_value
 
             // update the layer's gradients
-            for j in 0..<last_layer.num_in {
-                dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[i]
-                layer.weight_grads[i][j] += dcost_dweight
-            }
-            layer.bias_grads[i] += layer_learn.node_values[i]
+            layer_update_gradients(layer, i, layer_learn)
         }
         old_node_values = layer_learn.node_values
     }
@@ -207,8 +209,9 @@ forward :: proc{
 
 // runs the inputs throught the neural network and updates the learn data to be used for backprop
 forward_learn :: proc(self: Neural_Network, input: []f32, learn_data: []Learn_Data) {
-    layer_input := make([]f32, self.largest_layer_size, context.temp_allocator)
-    layer_output := make([]f32, self.largest_layer_size, context.temp_allocator)
+    // NOTE: we do not free these here since we use an arena allocator during learning
+    layer_input := make([]f32, self.largest_layer_size)
+    layer_output := make([]f32, self.largest_layer_size)
     copy(layer_input, input)
     for i in 0..<len(self.layers) {
         layer := self.layers[i]
@@ -236,22 +239,50 @@ forward_no_learn :: proc(self: Neural_Network, input: []f32, output: []f32) {
     copy(output, layer_output)
 }
 
+learn_task_proc :: proc(task: thread.Task) {
+    task_data := cast(^Learn_Task)task.data
+    network := task_data.network
+    data_point := task_data.data_point
+    learn_data := learn_data_create(network.layers)
+    forward(network, data_point.input, learn_data)
+    task_data.cost = update_gradients(network, data_point.expected, learn_data)
+
+    // XXX: Idk if it is a good idea to destroy these here instead of when all tasks are done
+    vmem.arena_destroy(&task_data.arena)
+}
+
 // learn on the given batch with given learn rate
 // Returns the average cost of this iteration
-learn :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32) -> f32 {
-    // TODO: parallelize and give each thread an arena for learn data etc
-    learn_data := learn_data_create(self.layers)
-    defer learn_data_destroy(learn_data)
+learn :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32, num_threads := 0) -> f32 {
+    num_threads := num_threads
+    if num_threads == 0 {
+        num_threads = os.get_processor_core_count()
+    }
+
+    learn_tasks := make([]Learn_Task, len(training_batch))
+    defer delete(learn_tasks)
+
+    pool: thread.Pool
+    thread.pool_init(&pool, context.allocator, num_threads)
+    thread.pool_start(&pool)
+    defer thread.pool_destroy(&pool)
+
+    for data_point, i in training_batch {
+        assert(len(data_point.input) == self.input_size)
+        assert(len(data_point.expected) == self.output_size)
+
+        task := &learn_tasks[i]
+        task.network = self
+        task.data_point = data_point
+        thread.pool_add_task(&pool, vmem.arena_allocator(&task.arena), learn_task_proc, task, i)
+    }
+    thread.pool_finish(&pool)
 
     total_cost: f32
-    for data in training_batch {
-        assert(len(data.input) == self.input_size)
-        assert(len(data.expected) == self.output_size)
-
-        forward(self, data.input, learn_data)
-        total_cost += update_gradients(self, data.expected, learn_data)
-        // NOTE: could use temp allocator on each thread ?
-        free_all(context.temp_allocator)
+    for i in 0..<len(learn_tasks) {
+        task, _ := thread.pool_pop_done(&pool)
+        task_data := cast(^Learn_Task)task.data
+        total_cost += task_data.cost
     }
 
     apply_gradients(self, learn_rate / f32(len(training_batch)))
