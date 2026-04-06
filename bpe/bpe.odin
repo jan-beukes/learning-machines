@@ -185,7 +185,7 @@ tokenizer_save :: proc(path: string, t: Tokenizer) {
     if err != nil {
         fmt.println("Could not save tokenizer:", os.error_string(err))
     }
-    log.info("Saved tokenizer to 'tokenizer.bpe'")
+    log.infof("Saved tokenizer to '%v'", path)
 }
 
 tokenizer_train :: proc(t: ^Tokenizer, input_file: string, allocator := context.allocator) {
@@ -228,5 +228,5 @@ tokenizer_train :: proc(t: ^Tokenizer, input_file: string, allocator := context.
         free_all(context.temp_allocator)
     }
 
-    tokenizer_save("tokenizer.bpe", t^)
+    tokenizer_save("tokenizer.cbor", t^)
 }

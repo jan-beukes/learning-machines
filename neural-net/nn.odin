@@ -6,6 +6,7 @@ import "core:math"
 import "core:math/rand"
 import "core:os"
 import "core:mem"
+import "core:encoding/cbor"
 import "core:thread"
 import "core:sync"
 import vmem "core:mem/virtual"
@@ -26,8 +27,9 @@ Neural_Network :: struct {
     layers: []Layer,
     input_size, output_size: int,
     largest_layer_size: int,
+    random: Random,
     cost: Cost,
-    arena: vmem.Arena,
+    arena: vmem.Arena `cbor:"-"`,
 }
 
 // This is used to store values during training forward pass that are needed when we perform
@@ -52,6 +54,14 @@ Learn_Task :: struct {
     data_point: Data_Point,
     cost: f32,
     arena: vmem.Arena,
+}
+
+// shared nil is important if we want to check if the err is nil otherwise we would have to switch
+// the type and check if it is the nil of that type
+Error :: union #shared_nil {
+    os.Error,
+    cbor.Marshal_Error,
+    cbor.Unmarshal_Error,
 }
 
 // This should probably be used with an arena allocator
@@ -82,7 +92,6 @@ batch_create :: proc(inputs: [][]f32, labels: []int, num_labels: int) -> []Data_
         batch[i].expected[label] = 1.0
     }
 
-    rand.shuffle(batch[:])
     return batch
 }
 
@@ -93,7 +102,8 @@ batch_destroy :: proc(batch: []Data_Point) {
     delete(batch)
 }
 
-layer_init :: proc(self: ^Layer, num_in: int, num_out: int, activation: Activation) {
+layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
+    activation: Activation, random: Random) {
     self.num_in = num_in
     self.num_out = num_out
     self.activation = activation
@@ -107,7 +117,7 @@ layer_init :: proc(self: ^Layer, num_in: int, num_out: int, activation: Activati
         self.weight_grads[i] = make([]f32, num_in)
 
         for &weight in self.weights[i] {
-            weight = rand.float32_range(-1.0, 1.0) / math.sqrt(f32(num_in))
+            weight = random.function(num_in, num_out, context.random_generator)
         }
     }
 }
@@ -326,38 +336,107 @@ evaluate :: proc(self: Neural_Network, testing_data: []Data_Point) -> f32 {
     return f32(num_correct) / f32(num_inputs)
 }
 
-save_to_file :: proc(self: Neural_Network, path: string) {
+// Serialization using bill tin cbor
+save_to_file :: proc(self: Neural_Network, path: string) -> Error {
+    data := cbor.marshal(self) or_return
+    defer delete(data)
+    os.write_entire_file(path, data) or_return
 
+    return nil
 }
 
-load_from_file :: proc(path: string) -> Neural_Network {
+load_from_file :: proc(path: string) -> (network: Neural_Network, err: Error) {
+    data := os.read_entire_file(path, context.allocator) or_return
+    defer delete(data)
+    // make sure that we use the arena allocator so that the network
+    // can be properly deallocated on deinit
+    allocator := vmem.arena_allocator(&network.arena)
+    err = cbor.unmarshal(data, &network, allocator=allocator)
+    if err != nil {
+        vmem.arena_destroy(&network.arena)
+        return
+    }
 
+    // set the configuration values from the kinds
+    // we only serialize kinds since we can't serialize the function pointers in the structs
+    network.cost = cost_from_kind(network.cost.kind)
+    network.random = random_from_kind(network.random.kind)
+    for &layer in network.layers {
+        layer.activation = activation_from_kind(layer.activation.kind)
+    }
+
+    return
 }
 
 // Initialize a neural network with the given layer sizes and config
 // The first size will be of the input
 init :: proc(self: ^Neural_Network, layer_sizes: []int, config: Config = DEFAULT_CONFIG) {
-    assert(self != nil)
+    config := config
     context.allocator = vmem.arena_allocator(&self.arena)
 
     self.largest_layer_size = slice.max(layer_sizes)
     self.input_size = layer_sizes[0]
     self.output_size = layer_sizes[len(layer_sizes)-1]
-    self.cost = config.cost
+
+    self.cost = cost_from_kind(config.cost)
+    self.random = random_from_kind(config.random)
 
     layers: [dynamic]Layer
     // Create layers for all but first size since that is the input
     for i in 1..<len(layer_sizes) {
         num_in := layer_sizes[i-1]
         layer: Layer
-        activation := i == (len(layer_sizes) - 1) ? config.output_activation : config.activation
-        layer_init(&layer, num_in, layer_sizes[i], activation)
+        activation: Activation
+        if i == len(layer_sizes) - 1 {
+            activation = activation_from_kind(config.output_activation)
+        } else {
+            activation = activation_from_kind(config.activation)
+        }
+        layer_init(&layer, num_in, layer_sizes[i], activation, self.random)
         append(&layers, layer)
     }
 
     self.layers = layers[:]
 }
 
+reset :: proc{
+    reset_with_config,
+    reset_no_config,
+}
+
+// reset the weights and biases also changing the networks config
+reset_with_config :: proc(self: ^Neural_Network, config: Config) {
+    self.cost = cost_from_kind(config.cost)
+    self.random = random_from_kind(config.random)
+    for i in 0..<len(self.layers) {
+        layer := &self.layers[i]
+        if i == len(self.layers) - 1 {
+            layer.activation = activation_from_kind(config.output_activation)
+        } else {
+            layer.activation = activation_from_kind(config.activation)
+        }
+        for i in 0..<layer.num_out {
+            for &weight in layer.weights[i] {
+                weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
+            }
+            layer.biases[i] = 0
+        }
+    }
+}
+
+// reset the weights and biases
+reset_no_config :: proc(self: ^Neural_Network) {
+    for &layer in self.layers {
+        for i in 0..<layer.num_out {
+            for &weight in layer.weights[i] {
+                weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
+            }
+            layer.biases[i] = 0
+        }
+    }
+}
+
 deinit :: proc(self: ^Neural_Network) {
     vmem.arena_destroy(&self.arena)
+    self^ = Neural_Network{}
 }

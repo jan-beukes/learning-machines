@@ -80,8 +80,8 @@ main :: proc() {
     }
     input := args[1]
 
-    input_file := "../data/shakespeare.txt"
-    tokenizer, ok := tokenizer_load("./tokenizer.bpe")
+    input_file := "./the-verdict.txt"
+    tokenizer, ok := tokenizer_load("./tokenizer.cbor")
     if !ok {
         log.infof("Training tokenizer on '%v'", input_file)
         tokenizer_train(&tokenizer, input_file)

@@ -2,6 +2,7 @@ package nn
 
 import "core:fmt"
 import "core:os"
+import "core:math/rand"
 import "core:log"
 import "core:slice"
 import "core:strings"
@@ -43,18 +44,27 @@ main :: proc() {
     context.logger = log.create_console_logger(opt=log.Options{.Level, .Terminal_Color})
 
     iris, names := load_iris("iris/iris.data")
+    defer batch_destroy(iris)
 
     input_size, output_size := len(iris[0].input), len(iris[0].expected)
 
-    model: Neural_Network
-    config := Config{ MEAN_SQUARED_ERROR, TANH, SOFTMAX }
-    init(&model, {input_size, 8, 8, output_size}, config)
+    model, err := load_from_file("model.cbor")
     defer deinit(&model)
-
-    epochs := 100
-    learn_rate := 0.01 * f32(len(iris))
-    for i in 0..<epochs {
-        cost := learn(model, iris, learn_rate)
-        fmt.printfln("Epoch(%v): Accuracy = %v", i, evaluate(model, iris))
+    if err != nil {
+        fmt.printfln("Training new model...")
+        init(&model, {input_size, 8, 8, output_size})
+        epochs := 500
+        learn_rate := 0.008 * f32(len(iris))
+        for i in 0..<epochs {
+            cost := learn(model, iris, learn_rate)
+            if i % 80 == 0 {
+                fmt.printfln("Epoch(%v): Cost = %v", i, cost)
+            }
+        }
+        err := save_to_file(model, "model.cbor")
+        if err != nil {
+            fmt.eprintln("Could not save model:", err)
+        }
     }
+    fmt.println("Accuracy:", evaluate(model, iris))
 }

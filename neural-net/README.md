@@ -2,6 +2,7 @@
 
 ## example datasets
 - [Iris](archive.ics.uci.edu/dataset/53/iris)
+- [Fashion-MNIST](https://github.com/zalandoresearch/fashion-mnist)
 - [Cifar-10](https://www.cs.toronto.edu/~kriz/cifar.html)
 
 ## References

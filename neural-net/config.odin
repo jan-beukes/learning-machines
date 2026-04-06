@@ -3,28 +3,89 @@
 package nn
 
 import "core:math"
+import "core:math/rand"
+import "base:runtime"
 
-DEFAULT_CONFIG :: Config{ MEAN_SQUARED_ERROR, SIGMOID, SOFTMAX }
+DEFAULT_CONFIG :: Config{ .Mean_Squared_Error, .Sigmoid, .Softmax, .Normal }
+
+Config :: struct {
+    cost: Cost_Kind,
+    activation: Activation_Kind,
+    output_activation: Activation_Kind,
+    random: Random_Kind,
+}
+
+Cost_Kind :: enum {
+    Mean_Squared_Error,
+}
+
+Activation_Kind :: enum {
+    Sigmoid,
+    Softmax,
+    ReLu,
+    Tanh,
+}
+
+Random_Kind :: enum {
+    Normal,
+}
 
 Cost :: struct {
-    function: proc(ypred, y: []f32) -> f32,
-    derivative: proc(ypred, y: f32) -> f32,
+    kind: Cost_Kind,
+    function: proc(ypred, y: []f32) -> f32 `cbor:"-"`,
+    derivative: proc(ypred, y: f32) -> f32 `cbor:"-"`,
 }
 
 Activation :: struct {
-    function: proc(inputs: []f32, idx: int) -> f32,
-    derivative: proc(inputs: []f32, idx: int) -> f32,
+    kind: Activation_Kind,
+    function: proc(inputs: []f32, idx: int) -> f32 `cbor:"-"`,
+    derivative: proc(inputs: []f32, idx: int) -> f32 `cbor:"-"`,
 }
 
-Config :: struct {
-    cost: Cost,
-    activation: Activation,
-    output_activation: Activation,
+// Some random initializations use num_in and num_out
+Random :: struct {
+    kind: Random_Kind,
+    function: proc(num_in, num_out: int, gen: runtime.Random_Generator) -> f32 `cbor:"-"`,
 }
 
-// Cost functions
+cost_from_kind :: proc(kind: Cost_Kind) -> Cost {
+    cost: Cost
+    switch kind {
+    case .Mean_Squared_Error: cost = MEAN_SQUARED_ERROR
+    }
+    return cost
+}
 
+activation_from_kind :: proc(kind: Activation_Kind) -> Activation {
+    activation: Activation
+    switch kind {
+    case .Sigmoid: activation = SIGMOID
+    case .Softmax: activation = SOFTMAX
+    case .Tanh: activation = TANH
+    case .ReLu: activation = RELU
+    }
+    return activation
+}
+
+random_from_kind :: proc(kind: Random_Kind) -> Random {
+    random: Random
+    switch kind {
+    case .Normal: random = NORMAL
+    }
+    return random
+}
+
+//----Random Initializors---
+NORMAL :: Random{
+    kind = .Normal,
+    function = proc(num_in, num_out: int, gen: runtime.Random_Generator) -> f32 {
+        return rand.float32_normal(0, 1, gen)
+    }
+}
+
+//----Cost functions----
 MEAN_SQUARED_ERROR :: Cost{
+    kind = .Mean_Squared_Error,
     function = proc(ypred, y: []f32) -> f32 {
         assert(len(y) == len(ypred))
         cost: f32
@@ -39,9 +100,9 @@ MEAN_SQUARED_ERROR :: Cost{
     }
 }
 
-// Activations
-
+//----Activations----
 TANH :: Activation{
+    kind = .Tanh,
     function = proc(inputs: []f32, idx: int) -> f32 {
         return math.tanh(inputs[idx])
     },
@@ -52,6 +113,7 @@ TANH :: Activation{
 }
 
 RELU :: Activation{
+    kind = .ReLu,
     function = proc(inputs: []f32, idx: int) -> f32 {
         return max(0, inputs[idx])
     },
@@ -61,6 +123,7 @@ RELU :: Activation{
 }
 
 SIGMOID :: Activation{
+    kind = .Sigmoid,
     function = proc(inputs: []f32, idx: int) -> f32 {
         return 1.0 / (1.0 + math.exp(-inputs[idx]))
 
@@ -72,6 +135,7 @@ SIGMOID :: Activation{
 }
 
 SOFTMAX :: Activation{
+    kind = .Softmax,
     function = proc(inputs: []f32, idx: int) -> f32 {
         sum: f32 = 0
         for input in inputs {
