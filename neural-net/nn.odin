@@ -134,7 +134,6 @@ layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
         for &weight in self.weights[i] {
             weight = random.function(num_in, num_out, context.random_generator)
         }
-        self.biases[i] = STANDARD_NORMAL.function(num_in, num_out, context.random_generator)
     }
 }
 
@@ -188,12 +187,17 @@ layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
     sync.unlock(&self.grad_lock)
 }
 
-apply_gradients :: proc(self: Neural_Network, learn_rate: f32) {
+// regularization comes from adding λ/2n * sum(w^2) to the cost function to prevent large weights
+// which can lead to overfitting
+apply_gradients :: proc(self: Neural_Network, learn_rate: f32, regularization: f32) {
+    weight_decay := (1 - regularization*learn_rate)
+
     // apply gradients and reset to zero
     for layer in self.layers {
         for i in 0..<layer.num_out {
             for j in 0..<layer.num_in {
-                layer.weights[i][j] += -learn_rate * layer.weight_grads[i][j]
+                weight := weight_decay * layer.weights[i][j]
+                layer.weights[i][j] = weight - learn_rate * layer.weight_grads[i][j]
                 layer.weight_grads[i][j] = 0.0
             }
             layer.biases[i] += -learn_rate * layer.bias_grads[i]
@@ -263,22 +267,21 @@ forward_learn :: proc(self: Neural_Network, input: []f32, learn_data: []Learn_Da
     }
 }
 
-// runs the inputs throught the neural network and writes into the outputs
-forward_no_learn :: proc(self: Neural_Network, input: []f32, output: []f32) {
-    assert(len(output) == self.output_size)
+// runs the inputs throught the neural network and returns the outputs
+forward_no_learn :: proc(self: Neural_Network, input: []f32, allocator := context.allocator) -> []f32 {
     assert(len(input) == self.input_size)
+    context.allocator = allocator
 
-    layer_input := make([]f32, self.largest_layer_size, context.temp_allocator)
-    layer_output := make([]f32, self.largest_layer_size, context.temp_allocator)
+    layer_input := make([]f32, self.largest_layer_size)
+    layer_output := make([]f32, self.largest_layer_size)
+    defer delete(layer_input)
     copy(layer_input, input)
     for i in 0..<len(self.layers) {
         layer := self.layers[i]
         layer_calculate_output(layer, layer_input[:layer.num_in], layer_output[:layer.num_out])
         copy(layer_input, layer_output[:layer.num_out])
     }
-    copy(output, layer_output)
-
-    free_all(context.temp_allocator)
+    return layer_output[:self.output_size]
 }
 
 learn_task_proc :: proc(task: thread.Task) {
@@ -292,8 +295,10 @@ learn_task_proc :: proc(task: thread.Task) {
 }
 
 // train the network on the given batch with the given learn rate
+// regularization is the λ/n term from L2 regularization / weight decay
 // Returns the average cost for this training batch
-learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32, num_threads: int) -> f32 {
+learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32,
+    num_threads: int, regularization: f32 = 0) -> f32 {
     learn_tasks := make([]Learn_Task, len(training_batch))
     defer delete(learn_tasks)
 
@@ -318,11 +323,12 @@ learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, learn
         task_data := cast(^Learn_Task)task.data
         total_cost += task_data.cost
     }
-    apply_gradients(self, learn_rate / f32(len(training_batch)))
+    apply_gradients(self, learn_rate / f32(len(training_batch)), regularization)
     return total_cost / f32(len(training_batch))
 }
 
-learn_serial :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32) -> f32 {
+learn_serial :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32,
+    regularization: f32 = 0) -> f32 {
     total_cost: f32
     arena: vmem.Arena
     learn_data := learn_data_create(self.layers, vmem.arena_allocator(&arena))
@@ -336,7 +342,7 @@ learn_serial :: proc(self: Neural_Network, training_batch: []Data_Point, learn_r
         total_cost += update_gradients(self, data_point.expected, learn_data)
         free_all(context.temp_allocator)
     }
-    apply_gradients(self, learn_rate / f32(len(training_batch)))
+    apply_gradients(self, learn_rate / f32(len(training_batch)), regularization)
     return total_cost / f32(len(training_batch))
 }
 
@@ -350,10 +356,9 @@ eval_task_proc :: proc(task: thread.Task) {
     task_data := cast(^Eval_Task)task.data
     data_point := task_data.data_point
     network := task_data.network
-    output := make([]f32, network.output_size)
-    defer delete(output)
 
-    forward(network, data_point.input, output)
+    output := forward(network, data_point.input)
+    defer delete(output)
     predicted := slice.max_index(output)
     task_data.prediction = i32(predicted)
 }
@@ -392,15 +397,14 @@ evaluate_parallel :: proc(self: Neural_Network, testing_batch: []Data_Point, num
 evaluate_serial :: proc(self: Neural_Network, testing_batch: []Data_Point) -> f32 {
     num_correct := 0
     num_inputs := len(testing_batch)
-    output := make([]f32, self.output_size)
-    defer delete(output)
     for data_point in testing_batch {
-        forward(self, data_point.input, output)
+        output := forward(self, data_point.input, context.temp_allocator)
         predicted := slice.max_index(output)
         if i32(predicted) == data_point.label {
             num_correct += 1
         }
     }
+    free_all(context.temp_allocator)
     return f32(num_correct) / f32(num_inputs)
 }
 
@@ -492,7 +496,6 @@ reset_with_config :: proc(self: ^Neural_Network, config: Config) {
             for &weight in layer.weights[i] {
                 weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
             }
-            layer.biases[i] = STANDARD_NORMAL.function(layer.num_in, layer.num_out, context.random_generator)
         }
     }
 }
@@ -504,7 +507,6 @@ reset_no_config :: proc(self: ^Neural_Network) {
             for &weight in layer.weights[i] {
                 weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
             }
-            layer.biases[i] = STANDARD_NORMAL.function(layer.num_in, layer.num_out, context.random_generator)
         }
     }
 }

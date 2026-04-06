@@ -121,8 +121,8 @@ CROSS_ENTROPY :: Cost{
         for i in 0..<len(pred) {
             a := pred[i]
             y := expected[i]
-            c := y == 1.0 ? -math.ln(a) : -math.ln(1.0 - a)
-            cost += c
+            c := -y*math.ln(a) - (1 - y)*math.ln(1 - a)
+            cost += math.is_nan(c) ? 0 : c
         }
         return cost
     },
