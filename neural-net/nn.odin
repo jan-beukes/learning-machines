@@ -1,5 +1,6 @@
 package nn
 
+import "base:runtime"
 import "core:fmt"
 import "core:slice"
 import "core:math"
@@ -19,6 +20,9 @@ Layer :: struct {
     weight_grads: [][]f32,
     biases: []f32,
     bias_grads: []f32,
+
+    weight_grad_lock: sync.Mutex,
+    bias_grad_lock: sync.Mutex,
 
     activation: Activation,
 }
@@ -46,7 +50,7 @@ Learn_Data :: struct {
 Data_Point :: struct {
     input: []f32,
     expected: []f32,
-    label: int,
+    label: i32,
 }
 
 Learn_Task :: struct {
@@ -54,6 +58,12 @@ Learn_Task :: struct {
     data_point: Data_Point,
     cost: f32,
     arena: vmem.Arena,
+}
+
+Eval_Task :: struct {
+    network: Neural_Network,
+    data_point: Data_Point,
+    prediction: i32,
 }
 
 // shared nil is important if we want to check if the err is nil otherwise we would have to switch
@@ -64,24 +74,28 @@ Error :: union #shared_nil {
     cbor.Unmarshal_Error,
 }
 
-// This should probably be used with an arena allocator
+// This should be used with an arena allocator
 learn_data_create :: proc(layers: []Layer, allocator := context.allocator) -> []Learn_Data {
-    learn_data := make([]Learn_Data, len(layers), allocator)
+    context.allocator = allocator
+    learn_data := make([]Learn_Data, len(layers))
     for i in 0..<len(layers) {
-        learn_data[i].inputs = make([]f32, layers[i].num_in, allocator)
-        learn_data[i].activations = make([]f32, layers[i].num_out, allocator)
-        learn_data[i].weighted_inputs = make([]f32, layers[i].num_out, allocator)
-        learn_data[i].node_values = make([]f32, layers[i].num_out, allocator)
+        learn_data[i].inputs = make([]f32, layers[i].num_in)
+        learn_data[i].activations = make([]f32, layers[i].num_out)
+        learn_data[i].weighted_inputs = make([]f32, layers[i].num_out)
+        learn_data[i].node_values = make([]f32, layers[i].num_out)
     }
     return learn_data
 }
 
-// NOTE: This does not clone the inputs
-batch_create :: proc(inputs: [][]f32, labels: []int, num_labels: int) -> []Data_Point {
+// Create a batch of data points given inputs and labels.
+// This creates the one hot list for expected output
+// NOTE: This clones the inputs
+batch_create :: proc(inputs: [][]f32, labels: []i32, num_labels: i32, allocator := context.allocator) -> []Data_Point {
     assert(len(inputs) == len(labels))
+    context.allocator = allocator
     batch := make([]Data_Point, len(inputs))
     for i in 0..<len(batch) {
-        batch[i].input = inputs[i]
+        batch[i].input = slice.clone(inputs[i])
 
         label := labels[i]
         batch[i].label = label
@@ -95,9 +109,11 @@ batch_create :: proc(inputs: [][]f32, labels: []int, num_labels: int) -> []Data_
     return batch
 }
 
-batch_destroy :: proc(batch: []Data_Point) {
+batch_destroy :: proc(batch: []Data_Point, allocator := context.allocator) {
+    context.allocator = allocator
     for dp in batch {
         delete(dp.expected)
+        delete(dp.input)
     }
     delete(batch)
 }
@@ -119,6 +135,7 @@ layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
         for &weight in self.weights[i] {
             weight = random.function(num_in, num_out, context.random_generator)
         }
+        self.biases[i] = STANDARD_NORMAL.function(num_in, num_out, context.random_generator)
     }
 }
 
@@ -160,13 +177,21 @@ layer_calculate_output_no_learn :: proc(self: Layer, input, output: []f32) {
 }
 
 // update the layer's gradients
-layer_update_gradients :: proc(self: ^Layer, neuron: int, layer_learn: Learn_Data) {
-    // XXX: MAYBE race conditions are fine?
-    for j in 0..<self.num_in {
-        dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
-        self.weight_grads[neuron][j] += dcost_dweight
+layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
+    sync.lock(&self.weight_grad_lock)
+    for neuron in 0..<self.num_out {
+        for j in 0..<self.num_in {
+            dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
+            self.weight_grads[neuron][j] += dcost_dweight
+        }
     }
-    self.bias_grads[neuron] += layer_learn.node_values[neuron]
+    sync.unlock(&self.weight_grad_lock)
+
+    sync.lock(&self.bias_grad_lock)
+    for neuron in 0..<self.num_out {
+        self.bias_grads[neuron] += layer_learn.node_values[neuron]
+    }
+    sync.unlock(&self.bias_grad_lock)
 }
 
 apply_gradients :: proc(self: Neural_Network, learn_rate: f32) {
@@ -188,13 +213,14 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
     last_layer_learn := learn_data[len(learn_data)-1]
     last_layer := &self.layers[len(self.layers)-1]
     cost := self.cost.function(last_layer_learn.activations, expected)
+    
+    // calculate node values
     for i in 0..<last_layer.num_out {
         cost_derivative := self.cost.derivative(last_layer_learn.activations[i], expected[i])
         activation_derivative := last_layer.activation.derivative(last_layer_learn.weighted_inputs, i)
         last_layer_learn.node_values[i] = activation_derivative * cost_derivative 
-
-        layer_update_gradients(last_layer, i, last_layer_learn)
     }
+    layer_update_gradients(last_layer, last_layer_learn)
 
     // Hidden Layers
     old_node_values := last_layer_learn.node_values
@@ -203,6 +229,7 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
         next_layer := self.layers[i+1]
         layer_learn := learn_data[i]
 
+        // calculate node values
         for i in 0..<layer.num_out {
             node_value: f32
             // propogate node values
@@ -213,10 +240,10 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
             }
             node_value *= layer.activation.derivative(layer_learn.weighted_inputs, i)
             layer_learn.node_values[i] = node_value
-
-            // update the layer's gradients
-            layer_update_gradients(layer, i, layer_learn)
         }
+        // update the layer's gradients
+        layer_update_gradients(layer, layer_learn)
+
         old_node_values = layer_learn.node_values
     }
 
@@ -267,73 +294,126 @@ learn_task_proc :: proc(task: thread.Task) {
     learn_data := learn_data_create(network.layers)
     forward(network, data_point.input, learn_data)
     task_data.cost = update_gradients(network, data_point.expected, learn_data)
-
     vmem.arena_destroy(&task_data.arena)
 }
 
 // train the network on the given batch with the given learn rate
 // the learn rate is divided by the training batch so learn rate values should be proportional to batch size
-// if num_threads is 0 then no multithreading is used. This is faster for small networks but scales
-// badly when layer sizes get large
 // Returns the average cost for this training batch
-learn :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32, num_threads := 0) -> f32 {
-    // if num_threads is not set then we don't do any thread pool
+learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32, num_threads: int) -> f32 {
+    learn_tasks := make([]Learn_Task, len(training_batch))
+    defer delete(learn_tasks)
+
+    pool: thread.Pool
+    thread.pool_init(&pool, context.allocator, num_threads)
+    thread.pool_start(&pool)
+    defer thread.pool_destroy(&pool)
+
+    for data_point, i in training_batch {
+        assert(len(data_point.input) == self.input_size)
+        assert(len(data_point.expected) == self.output_size)
+
+        task := &learn_tasks[i]
+        task.network = self
+        task.data_point = data_point
+        thread.pool_add_task(&pool, vmem.arena_allocator(&task.arena), learn_task_proc, task, i)
+    }
+    thread.pool_finish(&pool)
     total_cost: f32
-    if num_threads == 0 {
-        arena: vmem.Arena
-        learn_data := learn_data_create(self.layers, vmem.arena_allocator(&arena))
-        defer vmem.arena_destroy(&arena)
-        for data_point in training_batch {
-            assert(len(data_point.input) == self.input_size)
-            assert(len(data_point.expected) == self.output_size)
-
-            context.allocator = context.temp_allocator
-            forward(self, data_point.input, learn_data)
-            total_cost += update_gradients(self, data_point.expected, learn_data)
-            free_all(context.temp_allocator)
-        }
-    } else {
-        learn_tasks := make([]Learn_Task, len(training_batch))
-        defer delete(learn_tasks)
-
-        pool: thread.Pool
-        thread.pool_init(&pool, context.allocator, num_threads)
-        thread.pool_start(&pool)
-        defer thread.pool_destroy(&pool)
-
-        for data_point, i in training_batch {
-            assert(len(data_point.input) == self.input_size)
-            assert(len(data_point.expected) == self.output_size)
-
-            task := &learn_tasks[i]
-            task.network = self
-            task.data_point = data_point
-            thread.pool_add_task(&pool, vmem.arena_allocator(&task.arena), learn_task_proc, task, i)
-        }
-        thread.pool_finish(&pool)
-        for i in 0..<len(learn_tasks) {
-            task, _ := thread.pool_pop_done(&pool)
-            task_data := cast(^Learn_Task)task.data
-            total_cost += task_data.cost
-        }
+    for i in 0..<len(learn_tasks) {
+        task, _ := thread.pool_pop_done(&pool)
+        task_data := cast(^Learn_Task)task.data
+        total_cost += task_data.cost
     }
     apply_gradients(self, learn_rate / f32(len(training_batch)))
     return total_cost / f32(len(training_batch))
 }
 
-evaluate :: proc(self: Neural_Network, testing_data: []Data_Point) -> f32 {
-    num_correct := 0
-    num_inputs := len(testing_data)
-    output := make([]f32, self.output_size)
+learn_serial :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32) -> f32 {
+    total_cost: f32
+    arena: vmem.Arena
+    learn_data := learn_data_create(self.layers, vmem.arena_allocator(&arena))
+    defer vmem.arena_destroy(&arena)
+    for data_point in training_batch {
+        assert(len(data_point.input) == self.input_size)
+        assert(len(data_point.expected) == self.output_size)
+
+        context.allocator = context.temp_allocator
+        forward(self, data_point.input, learn_data)
+        total_cost += update_gradients(self, data_point.expected, learn_data)
+        free_all(context.temp_allocator)
+    }
+    apply_gradients(self, learn_rate / f32(len(training_batch)))
+    return total_cost / f32(len(training_batch))
+}
+
+learn :: proc{
+    learn_parallel,
+    learn_serial,
+}
+
+
+eval_task_proc :: proc(task: thread.Task) {
+    task_data := cast(^Eval_Task)task.data
+    data_point := task_data.data_point
+    network := task_data.network
+    output := make([]f32, network.output_size)
     defer delete(output)
-    for data in testing_data {
-        forward(self, data.input, output)
-        predicted := slice.max_index(output)
-        if predicted == data.label {
+
+    forward(network, data_point.input, output)
+    predicted := slice.max_index(output)
+    task_data.prediction = i32(predicted)
+}
+
+evaluate_parallel :: proc(self: Neural_Network, testing_batch: []Data_Point, num_threads: int) -> f32 {
+    eval_tasks := make([]Eval_Task, len(testing_batch))
+    defer delete(eval_tasks)
+
+    pool: thread.Pool
+    thread.pool_init(&pool, context.allocator, num_threads)
+    thread.pool_start(&pool)
+    defer thread.pool_destroy(&pool)
+    for data_point, i in testing_batch {
+        assert(len(data_point.input) == self.input_size)
+        assert(len(data_point.expected) == self.output_size)
+        task := &eval_tasks[i]
+        task.network = self
+        task.data_point = data_point
+        thread.pool_add_task(&pool, runtime.default_allocator(), eval_task_proc, task, i)
+    }
+
+    thread.pool_finish(&pool)
+    num_correct := 0
+    num_inputs := len(testing_batch)
+    for i in 0..<len(eval_tasks) {
+        task, _ := thread.pool_pop_done(&pool)
+        task_data := cast(^Eval_Task)task.data
+        if task_data.prediction == task_data.data_point.label {
             num_correct += 1
         }
     }
     return f32(num_correct) / f32(num_inputs)
+}
+
+// Return the percentage of correct predictions from the neural network
+evaluate_serial :: proc(self: Neural_Network, testing_batch: []Data_Point) -> f32 {
+    num_correct := 0
+    num_inputs := len(testing_batch)
+    output := make([]f32, self.output_size)
+    defer delete(output)
+    for data_point in testing_batch {
+        forward(self, data_point.input, output)
+        predicted := slice.max_index(output)
+        if i32(predicted) == data_point.label {
+            num_correct += 1
+        }
+    }
+    return f32(num_correct) / f32(num_inputs)
+}
+
+evaluate :: proc{
+    evaluate_parallel,
+    evaluate_serial,
 }
 
 // Serialization using bill tin cbor
@@ -419,7 +499,7 @@ reset_with_config :: proc(self: ^Neural_Network, config: Config) {
             for &weight in layer.weights[i] {
                 weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
             }
-            layer.biases[i] = 0
+            layer.biases[i] = STANDARD_NORMAL.function(layer.num_in, layer.num_out, context.random_generator)
         }
     }
 }
@@ -431,7 +511,7 @@ reset_no_config :: proc(self: ^Neural_Network) {
             for &weight in layer.weights[i] {
                 weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
             }
-            layer.biases[i] = 0
+            layer.biases[i] = STANDARD_NORMAL.function(layer.num_in, layer.num_out, context.random_generator)
         }
     }
 }

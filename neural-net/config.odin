@@ -2,11 +2,12 @@
 // Optimizer, Cost function, Activation function
 package nn
 
+import "core:fmt"
 import "core:math"
 import "core:math/rand"
 import "base:runtime"
 
-DEFAULT_CONFIG :: Config{ .Mean_Squared_Error, .Sigmoid, .Softmax, .Normal }
+DEFAULT_CONFIG :: Config{ .Cross_Entropy, .Sigmoid, .Softmax, .Gaussian }
 
 Config :: struct {
     cost: Cost_Kind,
@@ -17,6 +18,7 @@ Config :: struct {
 
 Cost_Kind :: enum {
     Mean_Squared_Error,
+    Cross_Entropy,
 }
 
 Activation_Kind :: enum {
@@ -27,7 +29,8 @@ Activation_Kind :: enum {
 }
 
 Random_Kind :: enum {
-    Normal,
+    Standard_Normal,
+    Gaussian,
 }
 
 Cost :: struct {
@@ -52,6 +55,7 @@ cost_from_kind :: proc(kind: Cost_Kind) -> Cost {
     cost: Cost
     switch kind {
     case .Mean_Squared_Error: cost = MEAN_SQUARED_ERROR
+    case .Cross_Entropy: cost = CROSS_ENTROPY
     }
     return cost
 }
@@ -70,16 +74,24 @@ activation_from_kind :: proc(kind: Activation_Kind) -> Activation {
 random_from_kind :: proc(kind: Random_Kind) -> Random {
     random: Random
     switch kind {
-    case .Normal: random = NORMAL
+    case .Standard_Normal: random = STANDARD_NORMAL
+    case .Gaussian: random = GAUSSIAN
     }
     return random
 }
 
 //----Random Initializors---
-NORMAL :: Random{
-    kind = .Normal,
+STANDARD_NORMAL :: Random{
+    kind = .Standard_Normal,
     function = proc(num_in, num_out: int, gen: runtime.Random_Generator) -> f32 {
         return rand.float32_normal(0, 1, gen)
+    }
+}
+
+GAUSSIAN :: Random{
+    kind = .Gaussian,
+    function = proc(num_in, num_out: int, gen: runtime.Random_Generator) -> f32 {
+        return rand.float32_normal(0, 1.0/math.sqrt(f32(num_in)), gen)
     }
 }
 
@@ -98,6 +110,31 @@ MEAN_SQUARED_ERROR :: Cost{
     derivative = proc(ypred, y: f32) -> f32 {
         return ypred - y
     }
+}
+
+CROSS_ENTROPY :: Cost{
+    kind = .Cross_Entropy,
+	// NOTE: expected outputs are expected to all be either 0 or 1
+    function = proc(pred, expected: []f32) -> f32 {
+        assert(len(pred) == len(expected))
+        cost: f32
+        for i in 0..<len(pred) {
+            a := pred[i]
+            y := expected[i]
+            c := y == 1.0 ? -math.ln(a) : -math.ln(1.0 - a)
+            cost += c
+        }
+        return cost
+    },
+    derivative = proc(pred, expected: f32) -> f32 {
+        a := pred
+        y := expected
+        if a == 0 || a == 1 {
+            return 0
+        }
+        return (-a + y) / (a * (a - 1.0))
+    }
+
 }
 
 //----Activations----
@@ -149,6 +186,7 @@ SOFTMAX :: Activation{
             sum += math.exp(input)
         }
         x := math.exp(inputs[idx])
-        return (x*sum - x*x) / (sum*sum)
+        result := (x*sum - x*x) / (sum*sum)
+        return result
     }
 }
