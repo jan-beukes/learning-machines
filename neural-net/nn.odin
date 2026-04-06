@@ -21,8 +21,7 @@ Layer :: struct {
     biases: []f32,
     bias_grads: []f32,
 
-    weight_grad_lock: sync.Mutex,
-    bias_grad_lock: sync.Mutex,
+    grad_lock: sync.Mutex,
 
     activation: Activation,
 }
@@ -178,20 +177,15 @@ layer_calculate_output_no_learn :: proc(self: Layer, input, output: []f32) {
 
 // update the layer's gradients
 layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
-    sync.lock(&self.weight_grad_lock)
+    sync.lock(&self.grad_lock)
     for neuron in 0..<self.num_out {
         for j in 0..<self.num_in {
             dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
             self.weight_grads[neuron][j] += dcost_dweight
         }
-    }
-    sync.unlock(&self.weight_grad_lock)
-
-    sync.lock(&self.bias_grad_lock)
-    for neuron in 0..<self.num_out {
         self.bias_grads[neuron] += layer_learn.node_values[neuron]
     }
-    sync.unlock(&self.bias_grad_lock)
+    sync.unlock(&self.grad_lock)
 }
 
 apply_gradients :: proc(self: Neural_Network, learn_rate: f32) {
@@ -224,10 +218,10 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
 
     // Hidden Layers
     old_node_values := last_layer_learn.node_values
-    for i := len(self.layers) - 2; i > 0; i -= 1 {
-        layer := &self.layers[i]
-        next_layer := self.layers[i+1]
-        layer_learn := learn_data[i]
+    for l := len(self.layers) - 2; l >= 0; l -= 1 {
+        layer := &self.layers[l]
+        next_layer := self.layers[l+1]
+        layer_learn := learn_data[l]
 
         // calculate node values
         for i in 0..<layer.num_out {
@@ -298,7 +292,6 @@ learn_task_proc :: proc(task: thread.Task) {
 }
 
 // train the network on the given batch with the given learn rate
-// the learn rate is divided by the training batch so learn rate values should be proportional to batch size
 // Returns the average cost for this training batch
 learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32, num_threads: int) -> f32 {
     learn_tasks := make([]Learn_Task, len(training_batch))
@@ -395,7 +388,7 @@ evaluate_parallel :: proc(self: Neural_Network, testing_batch: []Data_Point, num
     return f32(num_correct) / f32(num_inputs)
 }
 
-// Return the percentage of correct predictions from the neural network
+// Return the percent of correct predictions from the neural network
 evaluate_serial :: proc(self: Neural_Network, testing_batch: []Data_Point) -> f32 {
     num_correct := 0
     num_inputs := len(testing_batch)

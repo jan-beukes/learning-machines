@@ -17,8 +17,8 @@ Config :: struct {
 }
 
 Cost_Kind :: enum {
-    Mean_Squared_Error,
     Cross_Entropy,
+    Mean_Squared_Error,
 }
 
 Activation_Kind :: enum {
@@ -29,8 +29,8 @@ Activation_Kind :: enum {
 }
 
 Random_Kind :: enum {
-    Standard_Normal,
     Gaussian,
+    Standard_Normal,
 }
 
 Cost :: struct {
