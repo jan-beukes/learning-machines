@@ -6,5 +6,8 @@ odin run . -- 'Text to tokenize' # tokenizes the text, colouring different token
 odin run . -- gen # generates a sequence of "random" tokens
 ```
 
-The way of choosing random tokens is based on Tsoding's implementation
+# References 
+
+https://www.youtube.com/@AndrejKarpathy
+
 https://github.com/tsoding/bpe
