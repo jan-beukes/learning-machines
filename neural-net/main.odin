@@ -14,22 +14,41 @@ import rl "vendor:raylib"
 Data_Set_Kind :: enum {
     Digits,
     Fashion,
+    Cifar,
 }
 
-update_input_image_texture :: proc(texture: ^rl.Texture, input: []f32) {
-    grayscale := make([]u8, len(input))
-    defer delete(grayscale)
-    for &pixel, i in grayscale {
-        pixel = u8(input[i] * 255.0)
+update_input_image_texture :: proc(texture: ^rl.Texture, input: []f32, kind: Data_Set_Kind) {
+    pixels := make([]u8, len(input))
+    data := raw_data(pixels)
+    defer delete(pixels)
+
+    width, height: i32
+    format: rl.PixelFormat
+    switch kind {
+    case .Digits, .Fashion:
+        for &pixel, i in pixels {
+            pixel = u8(input[i] * 255.0)
+        }
+        format = .UNCOMPRESSED_GRAYSCALE
+        width, height = MNIST_RES, MNIST_RES
+    case .Cifar:
+        image_size := CIFAR_RES*CIFAR_RES
+        for i in 0..<image_size {
+            idx := 3*i
+            pixels[idx] = u8(input[i] * 255.0)
+            pixels[idx+1] = u8(input[image_size + i] * 255.0)
+            pixels[idx+2] = u8(input[2*image_size + i] * 255.0)
+        }
+        format = .UNCOMPRESSED_R8G8B8
+        width, height = CIFAR_RES, CIFAR_RES
     }
-    data := raw_data(grayscale)
     if !rl.IsTextureValid(texture^) {
         image := rl.Image{
             data = data,
-            width = MNIST_RES,
-            height = MNIST_RES,
+            width = width,
+            height = height,
             mipmaps = 1,
-            format = .UNCOMPRESSED_GRAYSCALE,
+            format = format,
         }
         texture^ = rl.LoadTextureFromImage(image)
     } else {
@@ -43,8 +62,9 @@ predict :: proc(model: Neural_Network, data_point: Data_Point) -> (i32, f32) {
     return prediction, output[prediction]
 }
 
-run_viewer :: proc(model: Neural_Network, mnist: Data_Set, kind: Data_Set_Kind) {
+run_viewer :: proc(model: Neural_Network, data_set: Data_Set, kind: Data_Set_Kind) {
     resx, resy: i32 = 800, 900
+    rl.SetTraceLogLevel(.ERROR)
     rl.InitWindow(resx, resy, "Neural Network")
     defer rl.EndDrawing()
 
@@ -53,29 +73,29 @@ run_viewer :: proc(model: Neural_Network, mnist: Data_Set, kind: Data_Set_Kind) 
 
     image_idx := 0
     texture: rl.Texture
-    update_input_image_texture(&texture, mnist.data[image_idx].input)
-    prediction, confidence := predict(model, mnist.data[image_idx])
+    update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
+    prediction, confidence := predict(model, data_set.data[image_idx])
     for !rl.WindowShouldClose() {
 
         if rl.IsKeyPressed(.RIGHT) {
-            image_idx = (image_idx + 1) % len(mnist.data)
-            prediction, confidence = predict(model, mnist.data[image_idx])
-            update_input_image_texture(&texture, mnist.data[image_idx].input)
+            image_idx = (image_idx + 1) % len(data_set.data)
+            prediction, confidence = predict(model, data_set.data[image_idx])
+            update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
         } else if rl.IsKeyPressed(.LEFT) {
-            image_idx = math.floor_mod(image_idx - 1, len(mnist.data))
-            prediction, confidence = predict(model, mnist.data[image_idx])
-            update_input_image_texture(&texture, mnist.data[image_idx].input)
+            image_idx = math.floor_mod(image_idx - 1, len(data_set.data))
+            prediction, confidence = predict(model, data_set.data[image_idx])
+            update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
         } else if rl.IsKeyPressed(.SPACE) {
             // find next incorrect prediction
-            for i := image_idx + 1; i != image_idx; i = (i + 1) % len(mnist.data) {
-                data_point := mnist.data[i]
+            for i := image_idx + 1; i != image_idx; i = (i + 1) % len(data_set.data) {
+                data_point := data_set.data[i]
                 prediction, confidence = predict(model, data_point)
                 if prediction != data_point.label {
                     image_idx = i
                     break
                 }
             }
-            update_input_image_texture(&texture, mnist.data[image_idx].input)
+            update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
         }
 
         rl.BeginDrawing()
@@ -85,13 +105,12 @@ run_viewer :: proc(model: Neural_Network, mnist: Data_Set, kind: Data_Set_Kind) 
         rl.DrawTexturePro(texture, src, dst, {}, 0, rl.WHITE)
 
         // UI
-
-        label := mnist.data[image_idx].label
+        label := data_set.data[image_idx].label
 
         pad: f32 = 10
         text: cstring
-        if mnist.classes != nil {
-            text = rl.TextFormat("Prediction: %v (%.2f%%)", mnist.classes[prediction], 100*confidence)
+        if data_set.classes != nil {
+            text = rl.TextFormat("Prediction: %v (%.2f%%)", data_set.classes[prediction], 100*confidence)
         } else {
             text = rl.TextFormat("Prediction: %v (%.2f%%)", prediction, 100*confidence)
         }
@@ -99,8 +118,8 @@ run_viewer :: proc(model: Neural_Network, mnist: Data_Set, kind: Data_Set_Kind) 
         text_pos := rl.Vector2{ f32(resx) - pad - text_width, f32(resy) - pad - font_size }
         rl.DrawTextEx(font, text, text_pos, font_size, 0, rl.RAYWHITE)
 
-        if mnist.classes != nil {
-            text = rl.TextFormat("Label: %v", mnist.classes[label])
+        if data_set.classes != nil {
+            text = rl.TextFormat("Label: %v", data_set.classes[label])
         } else {
             text = rl.TextFormat("Label: %v", label)
         }
@@ -123,6 +142,9 @@ run_viewer :: proc(model: Neural_Network, mnist: Data_Set, kind: Data_Set_Kind) 
     }
 }
 
+
+// TODO: Add GUI for manual hyper paramater tuning ?
+
 main :: proc() {
     context.logger = log.create_console_logger(opt = { .Level, .Terminal_Color })
     data_set_kind: Data_Set_Kind
@@ -136,6 +158,9 @@ main :: proc() {
         case "fashion":
             data_set_kind = .Fashion
             data_set_dir = "fashion-mnist"
+        case "cifar":
+            data_set_kind = .Cifar
+            data_set_dir = "cifar-10"
         case:
             fmt.eprintfln("usage: %v <dataset>", os.base(os.args[0]))
             fmt.eprintfln("Supported datasets: digits, fashion")
@@ -145,17 +170,20 @@ main :: proc() {
     // Load chosen data set
     log.info("Loading Dataset")
     train_set, test_set: Data_Set
-    if data_set_kind == .Digits || data_set_kind == .Fashion {
+    switch data_set_kind {
+    case .Digits, .Fashion:
         train_set, test_set = load_mnist(data_set_dir)
         if data_set_kind == .Fashion {
             test_set.classes = FASHION_MNIST_CLASSES
         }
-    } else {
-        unimplemented()
+    case .Cifar:
+        train_set, test_set = load_cifar(data_set_dir)
     }
     defer {
         batch_destroy(train_set.data)
         batch_destroy(test_set.data)
+        // This should be fine for fashion
+        delete(train_set.classes)
     }
 
     enum_str, _ := fmt.enum_value_to_string(data_set_kind)
@@ -163,30 +191,32 @@ main :: proc() {
     model, err := load_from_file(model_path)
     defer deinit(&model)
     if err != nil {
-        config := Config{ .Cross_Entropy, .Sigmoid, .Softmax, .Gaussian }
-        init(&model, {train_set.input_size, 100, 30, train_set.output_size}, config)
-
         log.info("Training Network")
-        train := train_set.data[:50_000]
-        validation := train_set.data[50_000:]
+        config := Config{ .Cross_Entropy, .ReLu, .Softmax, .Gaussian }
+        init(&model, {train_set.input_size, 500, 10, train_set.output_size}, config)
 
-        mini_batch_size := 10
-        learn_rate: f32 = 0.5
-        regularization := 5.0 / f32(len(train))
-        epochs := 30
+        train_split: f32 = 0.80
+        split_idx := int(train_split*f32(len(train_set.data)))
+        train := train_set.data[:split_idx]
+        validation := train_set.data[split_idx:]
+
+        mini_batch_size := 2*os.get_processor_core_count()
+        learn_rate: f32 = 0.01
+        regularization: f32 = 0.1
+        epochs := 25
         for epoch in 0..<epochs {
             cost: f32
-            for i := 0; i < len(train); i += mini_batch_size {
+            for i := 0; i + mini_batch_size < len(train); i += mini_batch_size {
                 batch := train[i:i+mini_batch_size]
                 cost = learn(model, batch, learn_rate, os.get_processor_core_count(), regularization)
             }
             eval := evaluate(model, validation, os.get_processor_core_count())
             log.infof("Epoch(%v) Accuracy = %v", epoch + 1, eval)
         }
-        log.info("Testing")
-        log.info("Accuracy on test set:", evaluate(model, test_set.data, os.get_processor_core_count()))
         save_to_file(model, model_path)
     }
+    log.info("Testing")
+    log.info("Accuracy on test set:", evaluate(model, test_set.data, os.get_processor_core_count()))
 
     run_viewer(model, test_set, data_set_kind)
 }

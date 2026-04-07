@@ -8,6 +8,8 @@ import "core:slice"
 import "core:os"
 
 MNIST_RES :: 28
+CIFAR_RES :: 32
+CIFAR_BATCH_IMAGE_COUNT :: 10000
 
 FASHION_MNIST_CLASSES :: []string{
     "T-shirt",
@@ -66,6 +68,63 @@ load_iris :: proc(path: string, allocator := context.allocator) -> Data_Set {
         input_size = len(batch[0].input),
         output_size = len(batch[0].expected),
     }
+}
+
+load_cifar_batch :: proc(batches: ^[dynamic]Data_Point, path: string, num_labels: i32, allocator := context.allocator) {
+    data, err := os.read_entire_file(path, allocator)
+    defer delete(data)
+    if err != nil {
+        fmt.panicf("Could not read file '%v'", path)
+    }
+    r: bytes.Reader
+    bytes.reader_init(&r, data)
+    for _ in 0..<CIFAR_BATCH_IMAGE_COUNT {
+        data_point: Data_Point
+        data_point.input = make([]f32, 3*CIFAR_RES*CIFAR_RES)
+        data_point.expected = make([]f32, num_labels)
+        label, _ := bytes.reader_read_byte(&r)
+        data_point.label = i32(label)
+        data_point.expected[label] = 1.0
+        for i in 0..<len(data_point.input) {
+            b, _ := bytes.reader_read_byte(&r)
+            data_point.input[i] = f32(b) / 255.0
+        }
+        append(batches, data_point)
+    }
+}
+
+load_cifar :: proc(dir: string, allocator := context.allocator) -> (Data_Set, Data_Set) {
+    context.allocator = allocator
+
+    meta_path, _ := os.join_path({dir, "batches.meta.txt"}, context.temp_allocator)
+    content, err := os.read_entire_file(meta_path, context.allocator)
+    if err != nil {
+        fmt.panicf("Could not read file '%v'", meta_path)
+    }
+    defer delete(content)
+    classes := strings.split_lines(strings.trim_space(string(content)))
+    // clone since we are deleting the file content
+    for &class in classes {
+        class = strings.clone(class)
+    }
+
+    num_labels := i32(len(classes))
+    train_batch: [dynamic]Data_Point
+    
+    train_batch_path_fmt, _ := os.join_path({dir, "data_batch_%d.bin"}, context.temp_allocator)
+    for i in 1..=5 {
+        path := fmt.tprintf(train_batch_path_fmt, i)
+        load_cifar_batch(&train_batch, path, num_labels)
+    }
+
+    test_batch_path, _ := os.join_path({dir, "test_batch.bin"}, context.temp_allocator)
+    test_batch: [dynamic]Data_Point
+    load_cifar_batch(&test_batch, test_batch_path, num_labels)
+
+    free_all(context.temp_allocator)
+    train_set := Data_Set{ train_batch[:], classes, len(train_batch[0].input), len(train_batch[0].expected) }
+    test_set := Data_Set{ test_batch[:], classes, len(test_batch[0].input), len(test_batch[0].expected) }
+    return train_set, test_set
 }
 
 // returns an array of all the flattened images with float pixels 

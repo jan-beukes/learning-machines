@@ -13,5 +13,7 @@ main :: proc() {
 
     out := val_mul(d, val(2.0))
     fmt.printfln("Result: %v", out)
+
+    val_backwards(out)
     val_draw_dot(out)
 }

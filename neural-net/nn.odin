@@ -428,7 +428,7 @@ load_from_file :: proc(path: string) -> (network: Neural_Network, err: Error) {
     // make sure that we use the arena allocator so that the network
     // can be properly deallocated on deinit
     allocator := vmem.arena_allocator(&network.arena)
-    err = cbor.unmarshal(data, &network, allocator=allocator)
+    err = cbor.unmarshal(data, &network, allocator = allocator)
     if err != nil {
         vmem.arena_destroy(&network.arena)
         return
