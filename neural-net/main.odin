@@ -2,69 +2,221 @@ package nn
 
 import "core:fmt"
 import "core:os"
+import "core:math"
 import "core:math/rand"
 import "core:log"
 import "core:slice"
 import "core:strings"
 import "core:strconv"
 
-load_iris :: proc(path: string) -> ([]Data_Point, []string) {
-    content, err := os.read_entire_file(path, allocator=context.temp_allocator)
-    s: string = string(content)
-    inputs: [dynamic][]f32
-    labels: [dynamic]int
-    names: [dynamic]string
-    for line in strings.split_lines_iterator(&s) {
-        items := strings.split(line, ",", allocator = context.temp_allocator)
-        row := make([]f32, 4)
-        for i in 0..<len(row) {
-            ok: bool
-            row[i], ok = strconv.parse_f32(items[i])
-            if !ok {
-                fmt.eprintln("Could not parse iris line:", line)
-                os.exit(1)
-            }
-        }
-        append(&inputs, row)
-        name := items[4]
-        idx, found := slice.linear_search(names[:], name)
-        if found {
-            append(&labels, idx)
-        } else {
-            append(&labels, len(names))
-            append(&names, strings.clone(name))
-        }
-    }
+import rl "vendor:raylib"
 
-    free_all(context.temp_allocator)
-    return batch_create(inputs[:], labels[:], len(names)), names[:]
+Data_Set_Kind :: enum {
+    Digits,
+    Fashion,
+    Cifar,
 }
 
-main :: proc() {
-    context.logger = log.create_console_logger(opt=log.Options{.Level, .Terminal_Color})
+update_input_image_texture :: proc(texture: ^rl.Texture, input: []f32, kind: Data_Set_Kind) {
+    pixels := make([]u8, len(input))
+    data := raw_data(pixels)
+    defer delete(pixels)
 
-    iris, names := load_iris("iris/iris.data")
-    defer batch_destroy(iris)
-
-    input_size, output_size := len(iris[0].input), len(iris[0].expected)
-
-    model, err := load_from_file("model.cbor")
-    defer deinit(&model)
-    if err != nil {
-        fmt.printfln("Training new model...")
-        init(&model, {input_size, 8, 8, output_size})
-        epochs := 500
-        learn_rate := 0.008 * f32(len(iris))
-        for i in 0..<epochs {
-            cost := learn(model, iris, learn_rate)
-            if i % 80 == 0 {
-                fmt.printfln("Epoch(%v): Cost = %v", i, cost)
-            }
+    width, height: i32
+    format: rl.PixelFormat
+    switch kind {
+    case .Digits, .Fashion:
+        for &pixel, i in pixels {
+            pixel = u8(input[i] * 255.0)
         }
-        err := save_to_file(model, "model.cbor")
-        if err != nil {
-            fmt.eprintln("Could not save model:", err)
+        format = .UNCOMPRESSED_GRAYSCALE
+        width, height = MNIST_RES, MNIST_RES
+    case .Cifar:
+        image_size := CIFAR_RES*CIFAR_RES
+        for i in 0..<image_size {
+            idx := 3*i
+            pixels[idx] = u8(input[i] * 255.0)
+            pixels[idx+1] = u8(input[image_size + i] * 255.0)
+            pixels[idx+2] = u8(input[2*image_size + i] * 255.0)
+        }
+        format = .UNCOMPRESSED_R8G8B8
+        width, height = CIFAR_RES, CIFAR_RES
+    }
+    if !rl.IsTextureValid(texture^) {
+        image := rl.Image{
+            data = data,
+            width = width,
+            height = height,
+            mipmaps = 1,
+            format = format,
+        }
+        texture^ = rl.LoadTextureFromImage(image)
+    } else {
+        rl.UpdateTexture(texture^, data)
+    }
+}
+
+predict :: proc(model: Neural_Network, data_point: Data_Point) -> (i32, f32) {
+    output := forward(model, data_point.input, context.temp_allocator)
+    prediction: i32 = i32(slice.max_index(output))
+    return prediction, output[prediction]
+}
+
+run_viewer :: proc(model: Neural_Network, data_set: Data_Set, kind: Data_Set_Kind) {
+    resx, resy: i32 = 800, 900
+    rl.SetTraceLogLevel(.ERROR)
+    rl.InitWindow(resx, resy, "Neural Network")
+    defer rl.EndDrawing()
+
+    font_size: f32 = 30
+    font := rl.LoadFontEx("./iosevka.ttf", i32(font_size), nil, 0)
+
+    image_idx := 0
+    texture: rl.Texture
+    update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
+    prediction, confidence := predict(model, data_set.data[image_idx])
+    for !rl.WindowShouldClose() {
+
+        if rl.IsKeyPressed(.RIGHT) {
+            image_idx = (image_idx + 1) % len(data_set.data)
+            prediction, confidence = predict(model, data_set.data[image_idx])
+            update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
+        } else if rl.IsKeyPressed(.LEFT) {
+            image_idx = math.floor_mod(image_idx - 1, len(data_set.data))
+            prediction, confidence = predict(model, data_set.data[image_idx])
+            update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
+        } else if rl.IsKeyPressed(.SPACE) {
+            // find next incorrect prediction
+            for i := image_idx + 1; i != image_idx; i = (i + 1) % len(data_set.data) {
+                data_point := data_set.data[i]
+                prediction, confidence = predict(model, data_point)
+                if prediction != data_point.label {
+                    image_idx = i
+                    break
+                }
+            }
+            update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
+        }
+
+        rl.BeginDrawing()
+        rl.ClearBackground({ 0x20, 0x20, 0x20, 0xff })
+        src := rl.Rectangle{ 0, 0, f32(texture.width), f32(texture.height) }
+        dst := rl.Rectangle{ 0, 0, f32(resx), f32(resx) }
+        rl.DrawTexturePro(texture, src, dst, {}, 0, rl.WHITE)
+
+        // UI
+        label := data_set.data[image_idx].label
+
+        pad: f32 = 10
+        text: cstring
+        if data_set.classes != nil {
+            text = rl.TextFormat("Prediction: %v (%.2f%%)", data_set.classes[prediction], 100*confidence)
+        } else {
+            text = rl.TextFormat("Prediction: %v (%.2f%%)", prediction, 100*confidence)
+        }
+        text_width := rl.MeasureTextEx(font, text, font_size, 0).x
+        text_pos := rl.Vector2{ f32(resx) - pad - text_width, f32(resy) - pad - font_size }
+        rl.DrawTextEx(font, text, text_pos, font_size, 0, rl.RAYWHITE)
+
+        if data_set.classes != nil {
+            text = rl.TextFormat("Label: %v", data_set.classes[label])
+        } else {
+            text = rl.TextFormat("Label: %v", label)
+        }
+        rl.DrawTextEx(font, text, { pad, f32(resy) - pad - font_size }, font_size, 0, rl.RAYWHITE)
+
+        color: rl.Color
+        if prediction == label {
+            text = "Correct"
+            color = rl.GREEN
+        } else {
+            text = "Incorrect"
+            color = rl.RED
+        }
+        text_width = rl.MeasureTextEx(font, text, font_size, 0).x
+        rl.DrawTextEx(font, text, { 0.5*(f32(resx) - text_width), 10 }, font_size, 0, color)
+
+        rl.EndDrawing()
+        
+        free_all(context.temp_allocator)
+    }
+}
+
+
+// TODO: Add GUI for manual hyper paramater tuning ?
+
+main :: proc() {
+    context.logger = log.create_console_logger(opt = { .Level, .Terminal_Color })
+    data_set_kind: Data_Set_Kind
+    data_set_dir := "digits-mnist"
+    if len(os.args) > 1 {
+        data_set := os.args[1]
+        switch data_set {
+        case "digits":
+            data_set_kind = .Digits
+            data_set_dir = "digits-mnist"
+        case "fashion":
+            data_set_kind = .Fashion
+            data_set_dir = "fashion-mnist"
+        case "cifar":
+            data_set_kind = .Cifar
+            data_set_dir = "cifar-10"
+        case:
+            fmt.eprintfln("usage: %v <dataset>", os.base(os.args[0]))
+            fmt.eprintfln("Supported datasets: digits, fashion")
         }
     }
-    fmt.println("Accuracy:", evaluate(model, iris))
+
+    // Load chosen data set
+    log.info("Loading Dataset")
+    train_set, test_set: Data_Set
+    switch data_set_kind {
+    case .Digits, .Fashion:
+        train_set, test_set = load_mnist(data_set_dir)
+        if data_set_kind == .Fashion {
+            test_set.classes = FASHION_MNIST_CLASSES
+        }
+    case .Cifar:
+        train_set, test_set = load_cifar(data_set_dir)
+    }
+    defer {
+        batch_destroy(train_set.data)
+        batch_destroy(test_set.data)
+        // This should be fine for fashion
+        delete(train_set.classes)
+    }
+
+    enum_str, _ := fmt.enum_value_to_string(data_set_kind)
+    model_path, _ := os.join_filename(enum_str, "cbor", context.temp_allocator)
+    model, err := load_from_file(model_path)
+    defer deinit(&model)
+    if err != nil {
+        log.info("Training Network")
+        config := Config{ .Cross_Entropy, .ReLu, .Softmax, .Gaussian }
+        init(&model, {train_set.input_size, 500, 10, train_set.output_size}, config)
+
+        train_split: f32 = 0.80
+        split_idx := int(train_split*f32(len(train_set.data)))
+        train := train_set.data[:split_idx]
+        validation := train_set.data[split_idx:]
+
+        mini_batch_size := 2*os.get_processor_core_count()
+        learn_rate: f32 = 0.01
+        regularization: f32 = 0.1
+        epochs := 25
+        for epoch in 0..<epochs {
+            cost: f32
+            for i := 0; i + mini_batch_size < len(train); i += mini_batch_size {
+                batch := train[i:i+mini_batch_size]
+                cost = learn(model, batch, learn_rate, os.get_processor_core_count(), regularization)
+            }
+            eval := evaluate(model, validation, os.get_processor_core_count())
+            log.infof("Epoch(%v) Accuracy = %v", epoch + 1, eval)
+        }
+        save_to_file(model, model_path)
+    }
+    log.info("Testing")
+    log.info("Accuracy on test set:", evaluate(model, test_set.data, os.get_processor_core_count()))
+
+    run_viewer(model, test_set, data_set_kind)
 }
