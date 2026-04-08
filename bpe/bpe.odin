@@ -14,7 +14,7 @@ Token :: u32 // Token is an index into the vocab of pairs
 Pair :: [2]Token
 
 BPE_HEADER :: "BPE67"
-VOCAB_SIZE :: 2000
+VOCAB_SIZE :: 3000
 
 freq_map: map[Pair]uint
 
@@ -215,6 +215,7 @@ tokenizer_train :: proc(t: ^Tokenizer, input_file: string, allocator := context.
     for _ in len(t.vocab)..<VOCAB_SIZE {
         most, count := find_most_frequent_pair(t, tokens[:])
         if count == 1 {
+            fmt.println("DONE")
             break
         }
 

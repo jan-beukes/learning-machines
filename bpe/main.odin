@@ -42,7 +42,7 @@ print_random_tokens :: proc(t: Tokenizer, gen_max: int) {
             token = t.vocab[token].y
         }
         if len(next) == 0 {
-            token = rand.uint32_range(0, u32(len(t.vocab)))
+            token = t.merges[Pair{ ' ', rand.uint32_range(0, u32(len(t.vocab))) }]
             for t.freqs[token] == 0 {
                 token = rand.uint32_range(0, u32(len(t.vocab)))
             }
@@ -80,7 +80,7 @@ main :: proc() {
     }
     input := args[1]
 
-    input_file := "./the-verdict.txt"
+    input_file := "../llm/data/shakespeare.txt"
     tokenizer, ok := tokenizer_load("./tokenizer.cbor")
     if !ok {
         log.infof("Training tokenizer on '%v'", input_file)

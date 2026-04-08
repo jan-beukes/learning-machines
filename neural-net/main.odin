@@ -143,8 +143,6 @@ run_viewer :: proc(model: Neural_Network, data_set: Data_Set, kind: Data_Set_Kin
 }
 
 
-// TODO: Add GUI for manual hyper paramater tuning ?
-
 main :: proc() {
     context.logger = log.create_console_logger(opt = { .Level, .Terminal_Color })
     data_set_kind: Data_Set_Kind
@@ -163,7 +161,7 @@ main :: proc() {
             data_set_dir = "cifar-10"
         case:
             fmt.eprintfln("usage: %v <dataset>", os.base(os.args[0]))
-            fmt.eprintfln("Supported datasets: digits, fashion")
+            fmt.eprintfln("Supported datasets: digits, fashion, cifar")
         }
     }
 
@@ -192,18 +190,21 @@ main :: proc() {
     defer deinit(&model)
     if err != nil {
         log.info("Training Network")
-        config := Config{ .Cross_Entropy, .ReLu, .Softmax, .Gaussian }
-        init(&model, {train_set.input_size, 500, 10, train_set.output_size}, config)
 
-        train_split: f32 = 0.80
+        // params
+        config := Config{ .Cross_Entropy, .ReLu, .Softmax, .Gaussian }
+        layers := []int{train_set.input_size, 100, train_set.output_size}
+        init(&model, layers, config)
+        train_split: f32 = 0.90
+        mini_batch_size := 36
+        learn_rate: f32 = 0.1
+        regularization: f32 = 0.0001
+        epochs := 10
+
         split_idx := int(train_split*f32(len(train_set.data)))
         train := train_set.data[:split_idx]
         validation := train_set.data[split_idx:]
 
-        mini_batch_size := 2*os.get_processor_core_count()
-        learn_rate: f32 = 0.01
-        regularization: f32 = 0.1
-        epochs := 25
         for epoch in 0..<epochs {
             cost: f32
             for i := 0; i + mini_batch_size < len(train); i += mini_batch_size {

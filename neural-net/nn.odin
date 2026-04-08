@@ -15,9 +15,9 @@ import vmem "core:mem/virtual"
 Layer :: struct {
     num_in: int,
     num_out: int, // This is equal to the number of neurons on this layer
-    // weights[i] is weights for neuron i and weights[i][j] is the jth incomming weight
-    weights: [][]f32,
-    weight_grads: [][]f32,
+    // weight matrices num_out x num_in
+    weights: []f32,
+    weight_grads: []f32,
     biases: []f32,
     bias_grads: []f32,
 
@@ -123,16 +123,13 @@ layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
     self.num_out = num_out
     self.activation = activation
 
-    self.weights = make([][]f32, num_out)
-    self.weight_grads = make([][]f32, num_out)
+    self.weights = make([]f32, num_out*num_in)
+    self.weight_grads = make([]f32, num_out*num_in)
     self.biases = make([]f32, num_out)
     self.bias_grads = make([]f32, num_out)
     for i in 0..<num_out {
-        self.weights[i] = make([]f32, num_in)
-        self.weight_grads[i] = make([]f32, num_in)
-
-        for &weight in self.weights[i] {
-            weight = random.function(num_in, num_out, context.random_generator)
+        for j in 0..<num_in {
+            self.weights[i*num_in + j] = random.function(num_in, num_out, context.random_generator)
         }
     }
 }
@@ -150,7 +147,7 @@ layer_calculate_output_learn :: proc(self: Layer, input: []f32, learn_data: Lear
     for neuron in 0..<self.num_out {
         weighted_input := self.biases[neuron]
         for i in 0..<len(input) {
-            weighted_input += input[i] * self.weights[neuron][i]
+            weighted_input += input[i] * self.weights[neuron*self.num_in + i]
         }
         learn_data.weighted_inputs[neuron] = weighted_input
     }
@@ -165,7 +162,7 @@ layer_calculate_output_no_learn :: proc(self: Layer, input, output: []f32) {
     for neuron in 0..<self.num_out {
         weighted_input := self.biases[neuron]
         for i in 0..<len(input) {
-            weighted_input += input[i] * self.weights[neuron][i]
+            weighted_input += input[i] * self.weights[neuron*self.num_in + i]
         }
         weighted_inputs[neuron] = weighted_input
     }
@@ -180,7 +177,7 @@ layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
     for neuron in 0..<self.num_out {
         for j in 0..<self.num_in {
             dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
-            self.weight_grads[neuron][j] += dcost_dweight
+            self.weight_grads[neuron*self.num_in + j] += dcost_dweight
         }
         self.bias_grads[neuron] += layer_learn.node_values[neuron]
     }
@@ -196,9 +193,9 @@ apply_gradients :: proc(self: Neural_Network, learn_rate: f32, regularization: f
     for layer in self.layers {
         for i in 0..<layer.num_out {
             for j in 0..<layer.num_in {
-                weight := weight_decay * layer.weights[i][j]
-                layer.weights[i][j] = weight - learn_rate * layer.weight_grads[i][j]
-                layer.weight_grads[i][j] = 0.0
+                weight := weight_decay * layer.weights[i*layer.num_in + j]
+                layer.weights[i*layer.num_in + j] = weight - learn_rate * layer.weight_grads[i*layer.num_in + j]
+                layer.weight_grads[i*layer.num_in + j] = 0.0
             }
             layer.biases[i] += -learn_rate * layer.bias_grads[i]
             layer.bias_grads[i] = 0.0
@@ -233,7 +230,7 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
             // propogate node values
             for j in 0..<len(old_node_values) {
                 // from current layer i into next layer neuron j
-                weighted_input_derivative := next_layer.weights[j][i]
+                weighted_input_derivative := next_layer.weights[j*next_layer.num_in + i]
                 node_value += weighted_input_derivative * old_node_values[j]
             }
             node_value *= layer.activation.derivative(layer_learn.weighted_inputs, i)
@@ -493,8 +490,9 @@ reset_with_config :: proc(self: ^Neural_Network, config: Config) {
             layer.activation = activation_from_kind(config.activation)
         }
         for i in 0..<layer.num_out {
-            for &weight in layer.weights[i] {
-                weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
+            for j in 0..<layer.num_in {
+                layer.weights[i*layer.num_in + j] = self.random.function(layer.num_in,
+                    layer.num_out, context.random_generator)
             }
         }
     }
@@ -504,8 +502,9 @@ reset_with_config :: proc(self: ^Neural_Network, config: Config) {
 reset_no_config :: proc(self: ^Neural_Network) {
     for &layer in self.layers {
         for i in 0..<layer.num_out {
-            for &weight in layer.weights[i] {
-                weight = self.random.function(layer.num_in, layer.num_out, context.random_generator)
+            for j in 0..<layer.num_in {
+                layer.weights[i*layer.num_in + j] = self.random.function(layer.num_in,
+                    layer.num_out, context.random_generator)
             }
         }
     }
