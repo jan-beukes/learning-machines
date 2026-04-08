@@ -173,7 +173,6 @@ layer_calculate_output_no_learn :: proc(self: Layer, input, output: []f32) {
 
 // update the layer's gradients
 layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
-    sync.lock(&self.grad_lock)
     for neuron in 0..<self.num_out {
         for j in 0..<self.num_in {
             dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
@@ -181,7 +180,6 @@ layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
         }
         self.bias_grads[neuron] += layer_learn.node_values[neuron]
     }
-    sync.unlock(&self.grad_lock)
 }
 
 // regularization comes from adding λ/2n * sum(w^2) to the cost function to prevent large weights
@@ -294,8 +292,8 @@ learn_task_proc :: proc(task: thread.Task) {
 // train the network on the given batch with the given learn rate
 // regularization is the λ/n term from L2 regularization / weight decay
 // Returns the average cost for this training batch
-learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32,
-    num_threads: int, regularization: f32 = 0) -> f32 {
+learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, num_threads: int,
+    learn_rate: f32, regularization: f32 = 0) -> f32 {
     learn_tasks := make([]Learn_Task, len(training_batch))
     defer delete(learn_tasks)
 

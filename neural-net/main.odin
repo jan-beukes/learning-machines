@@ -195,11 +195,12 @@ main :: proc() {
         config := Config{ .Cross_Entropy, .ReLu, .Softmax, .Gaussian }
         layers := []int{train_set.input_size, 100, train_set.output_size}
         init(&model, layers, config)
+        num_threads := os.get_processor_core_count()
         train_split: f32 = 0.90
-        mini_batch_size := 36
-        learn_rate: f32 = 0.1
-        regularization: f32 = 0.0001
-        epochs := 10
+        mini_batch_size := 48
+        learn_rate: f32 = 0.05
+        regularization: f32 = 0.0005
+        epochs := 30
 
         split_idx := int(train_split*f32(len(train_set.data)))
         train := train_set.data[:split_idx]
@@ -209,9 +210,9 @@ main :: proc() {
             cost: f32
             for i := 0; i + mini_batch_size < len(train); i += mini_batch_size {
                 batch := train[i:i+mini_batch_size]
-                cost = learn(model, batch, learn_rate, os.get_processor_core_count(), regularization)
+                cost = learn(model, batch, num_threads, learn_rate, regularization)
             }
-            eval := evaluate(model, validation, os.get_processor_core_count())
+            eval := evaluate(model, validation, num_threads)
             log.infof("Epoch(%v) Accuracy = %v", epoch + 1, eval)
         }
         save_to_file(model, model_path)
@@ -219,5 +220,5 @@ main :: proc() {
     log.info("Testing")
     log.info("Accuracy on test set:", evaluate(model, test_set.data, os.get_processor_core_count()))
 
-    run_viewer(model, test_set, data_set_kind)
+    // run_viewer(model, test_set, data_set_kind)
 }
