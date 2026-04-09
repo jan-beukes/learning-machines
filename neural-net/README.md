@@ -1,4 +1,4 @@
-# WIP Neural network library
+# WIP Neural network
 
 ## example datasets
 - [Iris](archive.ics.uci.edu/dataset/53/iris)

@@ -28,6 +28,7 @@ Layer :: struct {
     bias_m: []f32,
     bias_v: []f32,
 
+    disabled: []bool, // used during dropout
     activation: Activation,
 }
 
@@ -35,6 +36,7 @@ Neural_Network :: struct {
     layers: []Layer,
     input_size, output_size: int,
     largest_layer_size: int,
+    dropout: f32,
     training_iterations: int,
     random: Random,
     cost: Cost,
@@ -124,6 +126,7 @@ batch_destroy :: proc(batch: []Data_Point, allocator := context.allocator) {
     delete(batch)
 }
 
+// HOLY MEMORY
 layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
     activation: Activation, random: Random) {
     self.num_in = num_in
@@ -139,47 +142,12 @@ layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
     self.bias_grads = make([]f32, num_out)
     self.bias_m = make([]f32, num_out)
     self.bias_v = make([]f32, num_out)
+
+    self.disabled = make([]bool, num_out)
     for i in 0..<num_out {
         for j in 0..<num_in {
             self.weights[i*num_in + j] = random.function(num_in, num_out, context.random_generator)
         }
-    }
-}
-
-layer_calculate_output :: proc{
-    layer_calculate_output_learn,
-    layer_calculate_output_no_learn,
-}
-
-// no output since we are filling learn data activations
-layer_calculate_output_learn :: proc(self: Layer, input: []f32, learn_data: Learn_Data) {
-    assert(len(learn_data.inputs) == len(input), "This layers learn data does not have the same number of inputs")
-    copy(learn_data.inputs, input)
-
-    for neuron in 0..<self.num_out {
-        weighted_input := self.biases[neuron]
-        for i in 0..<len(input) {
-            weighted_input += input[i] * self.weights[neuron*self.num_in + i]
-        }
-        learn_data.weighted_inputs[neuron] = weighted_input
-    }
-    for i in 0..<self.num_out {
-        learn_data.activations[i] = self.activation.function(learn_data.weighted_inputs, i)
-    }
-}
-
-layer_calculate_output_no_learn :: proc(self: Layer, input, output: []f32) {
-    weighted_inputs := make([]f32, self.num_out)
-    defer delete(weighted_inputs)
-    for neuron in 0..<self.num_out {
-        weighted_input := self.biases[neuron]
-        for i in 0..<len(input) {
-            weighted_input += input[i] * self.weights[neuron*self.num_in + i]
-        }
-        weighted_inputs[neuron] = weighted_input
-    }
-    for i in 0..<self.num_out {
-        output[i] = self.activation.function(weighted_inputs, i)
     }
 }
 
@@ -188,6 +156,7 @@ layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
     //XXX: We have no lock since it is major performace boost to just embrace the race conditions
     // idk if this is cooked but it mostly works
     for neuron in 0..<self.num_out {
+        if self.disabled[neuron] do continue
         for j in 0..<self.num_in {
             dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
             self.weight_grads[neuron*self.num_in + j] += dcost_dweight
@@ -213,6 +182,7 @@ apply_gradients :: proc(self: ^Neural_Network, learn_rate: f32, regularization: 
     // apply gradients and reset to zero
     for layer in self.layers {
         for i in 0..<len(layer.weights) {
+            if layer.disabled[i / layer.num_in] do continue
             grad := layer.weight_grads[i]
             layer.weights[i] *= weight_decay
 
@@ -229,7 +199,8 @@ apply_gradients :: proc(self: ^Neural_Network, learn_rate: f32, regularization: 
         }
 
         // update biases
-        for i in 0..<len(layer.biases) {
+        for i in 0..<layer.num_out {
+            if layer.disabled[i] do continue
             grad := layer.bias_grads[i]
             
             // ADAM
@@ -269,6 +240,8 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
 
         // calculate node values
         for i in 0..<layer.num_out {
+            if layer.disabled[i] do continue
+
             node_value: f32
             // propogate node values
             for j in 0..<len(old_node_values) {
@@ -285,8 +258,11 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
         old_node_values = layer_learn.node_values
     }
 
-    // zero all the node values so that we could potentially reuse learn_data 
+    // zero the learn data
     for data in learn_data {
+        slice.zero(data.inputs)
+        slice.zero(data.activations)
+        slice.zero(data.weighted_inputs)
         slice.zero(data.node_values)
     }
     return cost
@@ -300,10 +276,32 @@ forward :: proc{
 // runs the inputs throught the neural network and updates the learn data to be used for backprop
 forward_learn :: proc(self: Neural_Network, input: []f32, learn_data: []Learn_Data) {
     layer_input := input
-    for i in 0..<len(self.layers) {
-        layer := self.layers[i]
-        layer_calculate_output(layer, layer_input, learn_data[i])
-        layer_input = learn_data[i].activations
+    for layer, i in self.layers {
+        layer_learn := learn_data[i]
+        copy(layer_learn.inputs, layer_input)
+        for neuron in 0..<layer.num_out {
+            // skip any disabled hidden layers
+            if layer.disabled[neuron] {
+                continue
+            }
+            weighted_input := layer.biases[neuron]
+            for j in 0..<layer.num_in {
+                weighted_input += layer_input[j] * layer.weights[neuron*layer.num_in + j]
+            }
+            layer_learn.weighted_inputs[neuron] = weighted_input
+        }
+        for neuron in 0..<layer.num_out {
+            // skip any disabled hidden layers
+            if layer.disabled[neuron] {
+                continue
+            }
+            activation := layer.activation.function(layer_learn.weighted_inputs, neuron)
+            // we need to scale the weights coming out from hidden layers so that the overall
+            // sum is the same
+            activation = i == len(self.layers) - 1 ? activation : activation / (1 - self.dropout)
+            layer_learn.activations[neuron] = activation
+        }
+        layer_input = layer_learn.activations
     }
 }
 
@@ -314,12 +312,24 @@ forward_no_learn :: proc(self: Neural_Network, input: []f32, allocator := contex
 
     layer_input := make([]f32, self.largest_layer_size)
     layer_output := make([]f32, self.largest_layer_size)
-    defer delete(layer_input)
+    weighted_inputs := make([]f32, self.largest_layer_size)
+    defer { delete(layer_input); delete(weighted_inputs) }
     copy(layer_input, input)
-    for i in 0..<len(self.layers) {
-        layer := self.layers[i]
-        layer_calculate_output(layer, layer_input[:layer.num_in], layer_output[:layer.num_out])
-        copy(layer_input, layer_output[:layer.num_out])
+    for layer, i in self.layers {
+        layer_in := layer_input[:layer.num_in]
+        layer_out := layer_output[:layer.num_out]
+        for neuron in 0..<layer.num_out {
+            weighted_input := layer.biases[neuron]
+            for j in 0..<layer.num_in {
+                weight := layer.weights[neuron*layer.num_in + j]
+                weighted_input += layer_in[j] * weight
+            }
+            weighted_inputs[neuron] = weighted_input
+        }
+        for neuron in 0..<layer.num_out {
+            layer_out[neuron] = layer.activation.function(weighted_inputs[:layer.num_out], neuron)
+        }
+        copy(layer_input, layer_out)
     }
     return layer_output[:self.output_size]
 }
@@ -338,7 +348,7 @@ learn_task_proc :: proc(task: thread.Task) {
 // regularization is the λ/n term from L2 regularization / weight decay
 // Returns the average cost for this training batch
 learn :: proc(self: ^Neural_Network, training_batch: []Data_Point, learn_rate: f32,
-    regularization: f32 = 0, beta1: f32 = 0.9, beta2: f32 = 0.999, num_threads := 4) -> f32 {
+    regularization: f32 = 0, beta1: f32 = 0.9, beta2: f32 = 0.99, num_threads := 4) -> f32 {
     learn_tasks := make([]Learn_Task, len(training_batch))
     defer delete(learn_tasks)
 
@@ -346,6 +356,13 @@ learn :: proc(self: ^Neural_Network, training_batch: []Data_Point, learn_rate: f
     thread.pool_init(&pool, context.allocator, num_threads)
     thread.pool_start(&pool)
     defer thread.pool_destroy(&pool)
+
+    // dropout hidden neurons
+    for layer in self.layers[:len(self.layers) - 1] {
+        for i in 0 ..< layer.num_out {
+            layer.disabled[i] = rand.float32() < self.dropout
+        }
+    }
 
     for data_point, i in training_batch {
         assert(len(data_point.input) == self.input_size)
@@ -364,6 +381,12 @@ learn :: proc(self: ^Neural_Network, training_batch: []Data_Point, learn_rate: f
         total_cost += task_data.cost
     }
     apply_gradients(self, learn_rate / f32(len(training_batch)), regularization, beta1, beta2)
+
+    // reset disabled neurons
+    for layer in self.layers[:len(self.layers) - 1] {
+        slice.zero(layer.disabled)
+    }
+
     return total_cost / f32(len(training_batch))
 }
 
@@ -443,7 +466,7 @@ load_from_file :: proc(path: string) -> (network: Neural_Network, err: Error) {
 
 // Initialize a neural network with the given layer sizes and config
 // The first size will be of the input
-init :: proc(self: ^Neural_Network, layer_sizes: []int, config: Config = DEFAULT_CONFIG) {
+init :: proc(self: ^Neural_Network, layer_sizes: []int, dropout: f32 = 0, config: Config = DEFAULT_CONFIG) {
     config := config
     context.allocator = vmem.arena_allocator(&self.arena)
 
@@ -451,6 +474,7 @@ init :: proc(self: ^Neural_Network, layer_sizes: []int, config: Config = DEFAULT
     self.input_size = layer_sizes[0]
     self.output_size = layer_sizes[len(layer_sizes)-1]
 
+    self.dropout = dropout
     self.cost = cost_from_kind(config.cost)
     self.random = random_from_kind(config.random)
 

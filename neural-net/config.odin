@@ -24,7 +24,7 @@ Cost_Kind :: enum {
 Activation_Kind :: enum {
     Sigmoid,
     Softmax,
-    ReLu,
+    ReLU,
     Tanh,
 }
 
@@ -66,7 +66,7 @@ activation_from_kind :: proc(kind: Activation_Kind) -> Activation {
     case .Sigmoid: activation = SIGMOID
     case .Softmax: activation = SOFTMAX
     case .Tanh: activation = TANH
-    case .ReLu: activation = RELU
+    case .ReLU: activation = RELU
     }
     return activation
 }
@@ -150,7 +150,7 @@ TANH :: Activation{
 }
 
 RELU :: Activation{
-    kind = .ReLu,
+    kind = .ReLU,
     function = proc(inputs: []f32, idx: int) -> f32 {
         return max(0, inputs[idx])
     },

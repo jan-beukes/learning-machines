@@ -149,11 +149,16 @@ main :: proc() {
     data_set_dir := "digits-mnist"
     train := false
     if len(os.args) > 1 {
-        data_set := os.args[1]
-        if len(os.args) > 2 && os.args[1] == "train" {
+        data_set := "digits"
+        if os.args[1] == "train" {
             train = true
-            data_set = os.args[2]
+            if len(os.args) > 2 {
+                data_set = os.args[2]
+            }
+        } else {
+            data_set = os.args[1]
         }
+
         switch data_set {
         case "digits":
             data_set_kind = .Digits
@@ -201,20 +206,23 @@ main :: proc() {
     }
     if train {
         log.info("Training Network")
-
         // params
         config := Config{ .Cross_Entropy, .Sigmoid, .Softmax, .Gaussian }
-        layers := []int{train_set.input_size, 100, train_set.output_size}
-        init(&model, layers, config)
+        layers := []int{train_set.input_size, 120, train_set.output_size}
+        init(&model, layers, dropout = 0.5, config = config)
         num_threads := os.get_processor_core_count()
         train_split: f32 = 0.90
-        mini_batch_size := 24
-        learn_rate: f32 = 0.01
-        regularization: f32 = 0.0005
+        mini_batch_size := 5*os.get_processor_core_count()
+        learn_rate: f32 = 0.02
+        regularization: f32 = 0.01
         // decay rates for moving averages
         beta1: f32 = 0.9
-        beta2: f32 = 0.999
-        epochs := 80
+        beta2: f32 = 0.99
+        epochs := 300
+
+        train_file, err := os.create("train.txt")
+        defer os.close(train_file)
+        assert(err == nil)
 
         split_idx := int(train_split*f32(len(train_set.data)))
         train := train_set.data[:split_idx]
@@ -226,8 +234,10 @@ main :: proc() {
                 batch := train[i:i+mini_batch_size]
                 cost = learn(&model, batch, learn_rate, regularization, beta1, beta2, num_threads)
             }
-            eval := evaluate(model, validation, num_threads)
-            log.infof("Epoch(%v) Accuracy = %v", epoch + 1, eval)
+            eval_validation := evaluate(model, validation, num_threads)
+            eval_train := evaluate(model, train[:len(validation)], num_threads)
+            log.infof("Epoch(%v) Validation = %v | Training = %v", epoch+1, eval_validation, eval_train)
+            fmt.fprintln(train_file, epoch, eval_validation, eval_train)
         }
         save_to_file(model, model_path)
     }
