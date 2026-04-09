@@ -18,28 +18,24 @@ Data_Set_Kind :: enum {
 }
 
 update_input_image_texture :: proc(texture: ^rl.Texture, input: []f32, kind: Data_Set_Kind) {
-    pixels := make([]u8, len(input))
-    data := raw_data(pixels)
-    defer delete(pixels)
-
+    data: rawptr
     width, height: i32
     format: rl.PixelFormat
+    // used when we need to convert
+    pixels: []u8
+    defer delete(pixels)
     switch kind {
     case .Digits, .Fashion:
+        pixels = make([]u8, MNIST_RES*MNIST_RES)
         for &pixel, i in pixels {
             pixel = u8(input[i] * 255.0)
         }
+        data = raw_data(pixels)
         format = .UNCOMPRESSED_GRAYSCALE
         width, height = MNIST_RES, MNIST_RES
     case .Cifar:
-        image_size := CIFAR_RES*CIFAR_RES
-        for i in 0..<image_size {
-            idx := 3*i
-            pixels[idx] = u8(input[i] * 255.0)
-            pixels[idx+1] = u8(input[image_size + i] * 255.0)
-            pixels[idx+2] = u8(input[2*image_size + i] * 255.0)
-        }
-        format = .UNCOMPRESSED_R8G8B8
+        data = raw_data(input)
+        format = .UNCOMPRESSED_R32G32B32
         width, height = CIFAR_RES, CIFAR_RES
     }
     if !rl.IsTextureValid(texture^) {
@@ -77,7 +73,11 @@ run_viewer :: proc(model: Neural_Network, data_set: Data_Set, kind: Data_Set_Kin
     prediction, confidence := predict(model, data_set.data[image_idx])
     for !rl.WindowShouldClose() {
 
-        if rl.IsKeyPressed(.RIGHT) {
+        if rl.IsKeyPressed(.ENTER) {
+            image_idx = rand.int_range(0, len(data_set.data))
+            prediction, confidence = predict(model, data_set.data[image_idx])
+            update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
+        } else if rl.IsKeyPressed(.RIGHT) {
             image_idx = (image_idx + 1) % len(data_set.data)
             prediction, confidence = predict(model, data_set.data[image_idx])
             update_input_image_texture(&texture, data_set.data[image_idx].input, kind)
@@ -147,8 +147,13 @@ main :: proc() {
     context.logger = log.create_console_logger(opt = { .Level, .Terminal_Color })
     data_set_kind: Data_Set_Kind
     data_set_dir := "digits-mnist"
+    train := false
     if len(os.args) > 1 {
         data_set := os.args[1]
+        if len(os.args) > 2 && os.args[1] == "train" {
+            train = true
+            data_set = os.args[2]
+        }
         switch data_set {
         case "digits":
             data_set_kind = .Digits
@@ -160,8 +165,9 @@ main :: proc() {
             data_set_kind = .Cifar
             data_set_dir = "cifar-10"
         case:
-            fmt.eprintfln("usage: %v <dataset>", os.base(os.args[0]))
+            fmt.eprintfln("usage: %v [train] <dataset>", os.base(os.args[0]))
             fmt.eprintfln("Supported datasets: digits, fashion, cifar")
+            os.exit(1)
         }
     }
 
@@ -186,21 +192,29 @@ main :: proc() {
 
     enum_str, _ := fmt.enum_value_to_string(data_set_kind)
     model_path, _ := os.join_filename(enum_str, "cbor", context.temp_allocator)
-    model, err := load_from_file(model_path)
+    model: Neural_Network
     defer deinit(&model)
-    if err != nil {
+    err: Error
+    if !train {
+        model, err = load_from_file(model_path)
+        train = err != nil
+    }
+    if train {
         log.info("Training Network")
 
         // params
-        config := Config{ .Cross_Entropy, .ReLu, .Softmax, .Gaussian }
+        config := Config{ .Cross_Entropy, .Sigmoid, .Softmax, .Gaussian }
         layers := []int{train_set.input_size, 100, train_set.output_size}
         init(&model, layers, config)
         num_threads := os.get_processor_core_count()
         train_split: f32 = 0.90
-        mini_batch_size := 48
-        learn_rate: f32 = 0.05
+        mini_batch_size := 24
+        learn_rate: f32 = 0.01
         regularization: f32 = 0.0005
-        epochs := 30
+        // decay rates for moving averages
+        beta1: f32 = 0.9
+        beta2: f32 = 0.999
+        epochs := 80
 
         split_idx := int(train_split*f32(len(train_set.data)))
         train := train_set.data[:split_idx]
@@ -210,7 +224,7 @@ main :: proc() {
             cost: f32
             for i := 0; i + mini_batch_size < len(train); i += mini_batch_size {
                 batch := train[i:i+mini_batch_size]
-                cost = learn(model, batch, num_threads, learn_rate, regularization)
+                cost = learn(&model, batch, learn_rate, regularization, beta1, beta2, num_threads)
             }
             eval := evaluate(model, validation, num_threads)
             log.infof("Epoch(%v) Accuracy = %v", epoch + 1, eval)
@@ -218,7 +232,8 @@ main :: proc() {
         save_to_file(model, model_path)
     }
     log.info("Testing")
+    log.info("Accuracy on train set:", evaluate(model, train_set.data[:len(test_set.data)], os.get_processor_core_count()))
     log.info("Accuracy on test set:", evaluate(model, test_set.data, os.get_processor_core_count()))
 
-    // run_viewer(model, test_set, data_set_kind)
+    run_viewer(model, test_set, data_set_kind)
 }

@@ -15,13 +15,18 @@ import vmem "core:mem/virtual"
 Layer :: struct {
     num_in: int,
     num_out: int, // This is equal to the number of neurons on this layer
+
     // weight matrices num_out x num_in
     weights: []f32,
     weight_grads: []f32,
+    // the moving averages used for ADAM
+    weight_m: []f32,
+    weight_v: []f32,
+
     biases: []f32,
     bias_grads: []f32,
-
-    grad_lock: sync.Mutex,
+    bias_m: []f32,
+    bias_v: []f32,
 
     activation: Activation,
 }
@@ -30,8 +35,10 @@ Neural_Network :: struct {
     layers: []Layer,
     input_size, output_size: int,
     largest_layer_size: int,
+    training_iterations: int,
     random: Random,
     cost: Cost,
+
     arena: vmem.Arena `cbor:"-"`,
 }
 
@@ -125,8 +132,13 @@ layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
 
     self.weights = make([]f32, num_out*num_in)
     self.weight_grads = make([]f32, num_out*num_in)
+    self.weight_m = make([]f32, num_out*num_in)
+    self.weight_v = make([]f32, num_out*num_in)
+
     self.biases = make([]f32, num_out)
     self.bias_grads = make([]f32, num_out)
+    self.bias_m = make([]f32, num_out)
+    self.bias_v = make([]f32, num_out)
     for i in 0..<num_out {
         for j in 0..<num_in {
             self.weights[i*num_in + j] = random.function(num_in, num_out, context.random_generator)
@@ -157,8 +169,8 @@ layer_calculate_output_learn :: proc(self: Layer, input: []f32, learn_data: Lear
 }
 
 layer_calculate_output_no_learn :: proc(self: Layer, input, output: []f32) {
-    // forward_no_learn calls free_all at the end
-    weighted_inputs := make([]f32, self.num_out, context.temp_allocator)
+    weighted_inputs := make([]f32, self.num_out)
+    defer delete(weighted_inputs)
     for neuron in 0..<self.num_out {
         weighted_input := self.biases[neuron]
         for i in 0..<len(input) {
@@ -173,6 +185,8 @@ layer_calculate_output_no_learn :: proc(self: Layer, input, output: []f32) {
 
 // update the layer's gradients
 layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
+    //XXX: We have no lock since it is major performace boost to just embrace the race conditions
+    // idk if this is cooked but it mostly works
     for neuron in 0..<self.num_out {
         for j in 0..<self.num_in {
             dcost_dweight := layer_learn.inputs[j] * layer_learn.node_values[neuron]
@@ -184,18 +198,49 @@ layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
 
 // regularization comes from adding λ/2n * sum(w^2) to the cost function to prevent large weights
 // which can lead to overfitting
-apply_gradients :: proc(self: Neural_Network, learn_rate: f32, regularization: f32) {
+// beta1 and beta2 are the momentum paramaters for the moving averages used in ADAM to smooth out
+// the decent down the cost function
+// m_t = beta_1*m_t-1 + (1 - beta_1)dC/dw
+// v_t = beta_2*v_t-1 + (1 - beta_2)(dC/dw)^2
+UPDATE_EPSILON :: 1e-8
+apply_gradients :: proc(self: ^Neural_Network, learn_rate: f32, regularization: f32, beta1: f32, beta2: f32) {
+    self.training_iterations += 1
+
     weight_decay := (1 - regularization*learn_rate)
+    beta1_t := 1 - math.pow(beta1, f32(self.training_iterations))
+    beta2_t := 1 - math.pow(beta2, f32(self.training_iterations))
 
     // apply gradients and reset to zero
     for layer in self.layers {
-        for i in 0..<layer.num_out {
-            for j in 0..<layer.num_in {
-                weight := weight_decay * layer.weights[i*layer.num_in + j]
-                layer.weights[i*layer.num_in + j] = weight - learn_rate * layer.weight_grads[i*layer.num_in + j]
-                layer.weight_grads[i*layer.num_in + j] = 0.0
-            }
-            layer.biases[i] += -learn_rate * layer.bias_grads[i]
+        for i in 0..<len(layer.weights) {
+            grad := layer.weight_grads[i]
+            layer.weights[i] *= weight_decay
+
+            // ADAM
+            m := beta1*layer.weight_m[i] + (1 - beta1)*grad
+            v := beta2*layer.weight_v[i] + (1 - beta2) * (grad*grad)
+            m_hat := m / beta1_t
+            v_hat := v / beta2_t
+
+            layer.weights[i] += -learn_rate*(m_hat / (math.sqrt(v_hat) + UPDATE_EPSILON))
+            layer.weight_m[i] = m
+            layer.weight_v[i] = v
+            layer.weight_grads[i] = 0
+        }
+
+        // update biases
+        for i in 0..<len(layer.biases) {
+            grad := layer.bias_grads[i]
+            
+            // ADAM
+            m := beta1*layer.bias_m[i] + (1 - beta1)*grad
+            v := beta2*layer.bias_v[i] + (1 - beta2) * (grad*grad)
+            m_hat := m / beta1_t
+            v_hat := v / beta2_t
+            
+            layer.biases[i] += -learn_rate*(m_hat / (math.sqrt(v_hat) + UPDATE_EPSILON ))
+            layer.bias_m[i] = m
+            layer.bias_v[i] = v
             layer.bias_grads[i] = 0.0
         }
     }
@@ -292,8 +337,8 @@ learn_task_proc :: proc(task: thread.Task) {
 // train the network on the given batch with the given learn rate
 // regularization is the λ/n term from L2 regularization / weight decay
 // Returns the average cost for this training batch
-learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, num_threads: int,
-    learn_rate: f32, regularization: f32 = 0) -> f32 {
+learn :: proc(self: ^Neural_Network, training_batch: []Data_Point, learn_rate: f32,
+    regularization: f32 = 0, beta1: f32 = 0.9, beta2: f32 = 0.999, num_threads := 4) -> f32 {
     learn_tasks := make([]Learn_Task, len(training_batch))
     defer delete(learn_tasks)
 
@@ -307,7 +352,7 @@ learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, num_t
         assert(len(data_point.expected) == self.output_size)
 
         task := &learn_tasks[i]
-        task.network = self
+        task.network = self^
         task.data_point = data_point
         thread.pool_add_task(&pool, vmem.arena_allocator(&task.arena), learn_task_proc, task, i)
     }
@@ -318,34 +363,9 @@ learn_parallel :: proc(self: Neural_Network, training_batch: []Data_Point, num_t
         task_data := cast(^Learn_Task)task.data
         total_cost += task_data.cost
     }
-    apply_gradients(self, learn_rate / f32(len(training_batch)), regularization)
+    apply_gradients(self, learn_rate / f32(len(training_batch)), regularization, beta1, beta2)
     return total_cost / f32(len(training_batch))
 }
-
-learn_serial :: proc(self: Neural_Network, training_batch: []Data_Point, learn_rate: f32,
-    regularization: f32 = 0) -> f32 {
-    total_cost: f32
-    arena: vmem.Arena
-    learn_data := learn_data_create(self.layers, vmem.arena_allocator(&arena))
-    defer vmem.arena_destroy(&arena)
-    for data_point in training_batch {
-        assert(len(data_point.input) == self.input_size)
-        assert(len(data_point.expected) == self.output_size)
-
-        context.allocator = context.temp_allocator
-        forward(self, data_point.input, learn_data)
-        total_cost += update_gradients(self, data_point.expected, learn_data)
-        free_all(context.temp_allocator)
-    }
-    apply_gradients(self, learn_rate / f32(len(training_batch)), regularization)
-    return total_cost / f32(len(training_batch))
-}
-
-learn :: proc{
-    learn_parallel,
-    learn_serial,
-}
-
 
 eval_task_proc :: proc(task: thread.Task) {
     task_data := cast(^Eval_Task)task.data
@@ -358,7 +378,8 @@ eval_task_proc :: proc(task: thread.Task) {
     task_data.prediction = i32(predicted)
 }
 
-evaluate_parallel :: proc(self: Neural_Network, testing_batch: []Data_Point, num_threads: int) -> f32 {
+// Return the percent of correct predictions from the neural network
+evaluate :: proc(self: Neural_Network, testing_batch: []Data_Point, num_threads := 4) -> f32 {
     eval_tasks := make([]Eval_Task, len(testing_batch))
     defer delete(eval_tasks)
 
@@ -386,26 +407,6 @@ evaluate_parallel :: proc(self: Neural_Network, testing_batch: []Data_Point, num
         }
     }
     return f32(num_correct) / f32(num_inputs)
-}
-
-// Return the percent of correct predictions from the neural network
-evaluate_serial :: proc(self: Neural_Network, testing_batch: []Data_Point) -> f32 {
-    num_correct := 0
-    num_inputs := len(testing_batch)
-    for data_point in testing_batch {
-        output := forward(self, data_point.input, context.temp_allocator)
-        predicted := slice.max_index(output)
-        if i32(predicted) == data_point.label {
-            num_correct += 1
-        }
-    }
-    free_all(context.temp_allocator)
-    return f32(num_correct) / f32(num_inputs)
-}
-
-evaluate :: proc{
-    evaluate_parallel,
-    evaluate_serial,
 }
 
 // Serialization using bill tin cbor

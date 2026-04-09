@@ -85,9 +85,12 @@ load_cifar_batch :: proc(batches: ^[dynamic]Data_Point, path: string, num_labels
         label, _ := bytes.reader_read_byte(&r)
         data_point.label = i32(label)
         data_point.expected[label] = 1.0
-        for i in 0..<len(data_point.input) {
-            b, _ := bytes.reader_read_byte(&r)
-            data_point.input[i] = f32(b) / 255.0
+        // store as rgb triples
+        for chan in 0..<3 {
+            for i in 0..<CIFAR_RES*CIFAR_RES {
+                b, _ := bytes.reader_read_byte(&r)
+                data_point.input[i*3 + chan] = f32(b) / 255.0
+            }
         }
         append(batches, data_point)
     }
