@@ -81,10 +81,10 @@ main :: proc() {
     input := args[1]
 
     input_file := "../llm/data/shakespeare.txt"
-    tokenizer, ok := tokenizer_load("./tokenizer.cbor")
+    tokenizer, ok := load("./tokenizer.cbor")
     if !ok {
         log.infof("Training tokenizer on '%v'", input_file)
-        tokenizer_train(&tokenizer, input_file)
+        train(&tokenizer, input_file)
     }
 
     if input == "gen" {
@@ -95,9 +95,9 @@ main :: proc() {
         }
         print_random_tokens(tokenizer, gen_max)
     } else {
-        tokens := tokenizer_encode(tokenizer, input)
+        tokens := encode(tokenizer, input)
         fmt.println("Tokens:", tokens)
-        output := tokenizer_decode(tokenizer, tokens, show_tokens=true) 
+        output := decode(tokenizer, tokens, show_tokens=true) 
         fmt.println("Decoded:", output)
     }
 }

@@ -111,7 +111,7 @@ write_token :: proc(sb: ^strings.Builder, t: Tokenizer, tok: Token) {
 }
 
 
-tokenizer_decode :: proc(t: Tokenizer, tok_ids: []Token, show_tokens := false) -> string {
+decode :: proc(t: Tokenizer, tok_ids: []Token, show_tokens := false) -> string {
     sb: strings.Builder
     strings.builder_init(&sb)
     colors := [?]string{"\033[31m", "\033[32m", "\033[34m"}
@@ -129,7 +129,7 @@ tokenizer_decode :: proc(t: Tokenizer, tok_ids: []Token, show_tokens := false) -
     return strings.to_string(sb)
 }
 
-tokenizer_encode :: proc(t: Tokenizer, input: string, allocator := context.allocator) -> []Token {
+encode :: proc(t: Tokenizer, input: string, allocator := context.allocator) -> []Token {
     text := transmute([]byte)input
 
     tokens := make([dynamic]Token, allocator=allocator)
@@ -158,7 +158,13 @@ tokenizer_encode :: proc(t: Tokenizer, input: string, allocator := context.alloc
     return tokens[:]
 }
 
-tokenizer_load :: proc(path: string, allocator := context.allocator) -> (t: Tokenizer, ok: bool) {
+destroy :: proc(t: Tokenizer) {
+    delete(t.vocab)
+    delete(t.merges)
+    delete(t.freqs)
+}
+
+load :: proc(path: string, allocator := context.allocator) -> (t: Tokenizer, ok: bool) {
     data, err := os.read_entire_file(path, allocator)
     if err != nil {
         return
@@ -173,7 +179,7 @@ tokenizer_load :: proc(path: string, allocator := context.allocator) -> (t: Toke
     return
 }
 
-tokenizer_save :: proc(path: string, t: Tokenizer) {
+save :: proc(t: Tokenizer, path: string) {
     data, cbor_err := cbor.marshal_into_bytes(t)
     defer delete(data)
     if cbor_err != nil {
@@ -188,7 +194,7 @@ tokenizer_save :: proc(path: string, t: Tokenizer) {
     log.infof("Saved tokenizer to '%v'", path)
 }
 
-tokenizer_train :: proc(t: ^Tokenizer, input_file: string, allocator := context.allocator) {
+train :: proc(t: ^Tokenizer, input_file: string, allocator := context.allocator) {
     content, err := os.read_entire_file(input_file, allocator)
     defer delete(content)
     if err != nil {
@@ -229,5 +235,5 @@ tokenizer_train :: proc(t: ^Tokenizer, input_file: string, allocator := context.
         free_all(context.temp_allocator)
     }
 
-    tokenizer_save("tokenizer.cbor", t^)
+    save(t^, "tokenizer.cbor")
 }
