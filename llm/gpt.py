@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-device =  "cuda" if torch.cuda.is_available() else "cpu"
+device = "cuda"
 
 class BigramLanguageModel(nn.Module):
     def __init__(self, vocab_size):
@@ -90,7 +90,7 @@ def main():
         optimizer.step()
 
     lf_token = tokenizer.encode('\n')
-    idx = torch.tensor([lf_token], dtype=torch.long)
+    idx = torch.tensor([lf_token], dtype=torch.long).to(device)
     generated_tokens = model.generate(idx, max_new_tokens=200)[0].tolist()
     print(tokenizer.decode(generated_tokens))
 

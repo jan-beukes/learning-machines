@@ -114,7 +114,7 @@ MEAN_SQUARED_ERROR :: Cost{
 
 CROSS_ENTROPY :: Cost{
     kind = .Cross_Entropy,
-	// NOTE: expected outputs are expected to all be either 0 or 1
+    // NOTE: expected outputs are expected to all be either 0 or 1
     function = proc(pred, expected: []f32) -> f32 {
         assert(len(pred) == len(expected))
         cost: f32

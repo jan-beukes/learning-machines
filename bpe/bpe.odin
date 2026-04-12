@@ -14,7 +14,6 @@ Token :: u32 // Token is an index into the vocab of pairs
 Pair :: [2]Token
 
 BPE_HEADER :: "BPE67"
-VOCAB_SIZE :: 3000
 
 freq_map: map[Pair]uint
 
@@ -111,7 +110,7 @@ write_token :: proc(sb: ^strings.Builder, t: Tokenizer, tok: Token) {
 }
 
 
-decode :: proc(t: Tokenizer, tok_ids: []Token, show_tokens := false) -> string {
+decode :: proc(t: Tokenizer, tok_ids: []Token, show_tokens := false, allocator := context.allocator) -> string {
     sb: strings.Builder
     strings.builder_init(&sb)
     colors := [?]string{"\033[31m", "\033[32m", "\033[34m"}
@@ -194,7 +193,7 @@ save :: proc(t: Tokenizer, path: string) {
     log.infof("Saved tokenizer to '%v'", path)
 }
 
-train :: proc(t: ^Tokenizer, input_file: string, allocator := context.allocator) {
+train :: proc(t: ^Tokenizer, input_file: string, vocab_size := 1000, allocator := context.allocator) {
     content, err := os.read_entire_file(input_file, allocator)
     defer delete(content)
     if err != nil {
@@ -218,7 +217,7 @@ train :: proc(t: ^Tokenizer, input_file: string, allocator := context.allocator)
     }
 
     clear(&freq_map)
-    for _ in len(t.vocab)..<VOCAB_SIZE {
+    for _ in len(t.vocab)..<vocab_size {
         most, count := find_most_frequent_pair(t, tokens[:])
         if count == 1 {
             fmt.println("DONE")
