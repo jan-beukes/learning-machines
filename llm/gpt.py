@@ -79,19 +79,19 @@ def main():
     learn_rate = 0.003
     optimizer = torch.optim.AdamW(model.parameters(), lr=learn_rate)
 
-    epochs = 10_000
+    epochs = 50_000
     for i in range(epochs):
         xb, yb = get_batch(train_data, batch_size, context)
 
         logits, loss = model(xb, yb)
-        if i % 10 == 0: print(f"{i}: Loss = {loss.item()}")
+        if i % 100 == 0: print(f"{i}: Loss = {loss.item()}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
     lf_token = tokenizer.encode('\n')
     idx = torch.tensor([lf_token], dtype=torch.long).to(device)
-    generated_tokens = model.generate(idx, max_new_tokens=200)[0].tolist()
+    generated_tokens = model.generate(idx, max_new_tokens=300)[0].tolist()
     print(tokenizer.decode(generated_tokens))
 
 main()
