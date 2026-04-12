@@ -15,7 +15,7 @@ import vmem "core:mem/virtual"
 import "../bpe"
 
 INPUT_FILE :: "data/shakespeare.txt"
-VOCAB_SIZE :: 1000
+VOCAB_SIZE :: 2000
 
 Token :: bpe.Token
 
@@ -45,34 +45,28 @@ sample_multinomial :: proc(probs: []f32) -> int {
     panic("invalid probabilites, do not sum to 1.0")
 }
 
-// apply softmax to the array, does not allocate
 softmax :: proc(xs: []f32) -> []f32 {
+    ret := make([]f32, len(xs))
+    max_x := slice.max(xs)
     sum: f32
-    for &x in xs {
-        x = math.exp(x) 
-        sum += x
+    for x, i in xs {
+        ret[i] = math.exp(x - max_x)
+        sum += ret[i]
     }
-    for &x in xs {
-        x /= sum
-    }
-    return xs
+    for &x in ret do x /= sum
+    return ret
 }
 
-// Cross Entropy using Log softmax and log-likelihood so that we can take non [0, 1] inputs
 cost_function :: proc(logits: [][]f32, targets: []Token) -> f32 {
     cost: f32
     for n in 0..<len(logits) {
-        target := targets[n]
+        target    := targets[n]
         max_logit := slice.max(logits[n])
-
         sum_exp: f32
-        // safe log(sum(exp(ai)))
         for logit in logits[n] {
             sum_exp += math.exp(logit - max_logit)
         }
-        log_sum_exp := max_logit + math.ln(sum_exp)
-
-        cost += log_sum_exp - logits[n][target]
+        cost += max_logit + math.ln(sum_exp) - logits[n][target]
     }
     return cost / f32(len(targets))
 }
@@ -90,8 +84,8 @@ init :: proc(self: ^Model, vocab_size: int) {
     }
 }
 
-forward :: proc(self: Model, input: []Token) -> [][]f32 {
-    output:= make([][]f32, len(input))
+forward :: proc(self: Model, input: []Token, allocator := context.allocator) -> [][]f32 {
+    output:= make([][]f32, len(input), allocator)
     for token, i in input {
         row_start := int(token)*self.vocab_size
         row_end := row_start + self.vocab_size
@@ -100,90 +94,110 @@ forward :: proc(self: Model, input: []Token) -> [][]f32 {
     return output
 }
 
-backward :: proc(self: Model, logits: [][]f32, input: []Token, targets: []Token) -> f32 {
+backward_into :: proc(self: Model, logits: [][]f32, input: []Token, targets: []Token, grads: []f32) -> f32 {
     cost := cost_function(logits, targets)
     for n in 0..<len(logits) {
         idx := int(input[n])
         target := int(targets[n])
         logit_row := logits[n]
-
-        sum_exp: f32
         max_logit := slice.max(logit_row)
+        sum_exp: f32
         for logit in logit_row {
             sum_exp += math.exp(logit - max_logit)
         }
-
         for j in 0..<len(logit_row) {
             prob := math.exp(logit_row[j] - max_logit) / sum_exp
             y: f32 = j == target ? 1.0 : 0.0
-            derivative := prob - y
-            self.embedding_grads[idx*self.vocab_size + j] += derivative
+            grads[idx*self.vocab_size + j] += prob - y
         }
     }
     return cost
 }
 
-apply_gradients :: proc(self: Model, learn_rate: f32) {
-    size := self.vocab_size
-    for i in 0..<len(self.embedding) {
-        self.embedding[i] += -learn_rate*self.embedding_grads[i]
-        self.embedding_grads[i] = 0
+learn :: proc(self: ^Model, train_batch: []Data_Point, learn_rate: f32, num_threads := 4) -> f32 {
+    // Why is this not a problem in my neural nets????
+    Thread_Data :: struct {
+        model: ^Model,
+        batch: []Data_Point,
+        grads: []f32,
+        total_cost: f32,
     }
-}
 
-learn :: proc(self: Model, train_batch: []Data_Point, learn_rate: f32, num_threads := 4) -> f32 {
-    self := self
-
-    learn_proc :: proc(model: ^Model, batch: []Data_Point, total_cost: ^f32) {
-        context.allocator = context.temp_allocator
-        for data_point in batch {
-            logits := forward(model^, data_point.input)
-            total_cost^ += backward(model^, logits, data_point.input, data_point.target)
+    learn_proc :: proc(td: ^Thread_Data) {
+        num_grads := td.model.vocab_size * td.model.vocab_size
+        slice.zero(td.grads)
+        for data_point in td.batch {
+            logits := forward(td.model^, data_point.input, context.temp_allocator)
+            td.total_cost += backward_into(td.model^, logits, data_point.input, data_point.target, td.grads)
         }
         free_all(context.temp_allocator)
     }
 
-    threads := make([]^thread.Thread, num_threads)
-    costs := make([]f32, num_threads)
-    defer { delete(threads); delete(costs) }
-    thread_batch_size := int(math.ceil(f32(len(train_batch)) / f32(num_threads)))
+    num_grads := self.vocab_size*self.vocab_size
+    thread_batch_size := len(train_batch) / num_threads
+
+    threads := make([]^thread.Thread, num_threads, context.temp_allocator)
+    thread_data := make([]Thread_Data, num_threads, context.temp_allocator)
     for i in 0..<num_threads {
-        start_idx := i * thread_batch_size
-        end_idx := min(start_idx + thread_batch_size, len(train_batch))
-        batch := train_batch[start_idx:end_idx]
-        threads[i] = thread.create_and_start_with_poly_data3(&self, batch, &costs[i], learn_proc, priority=.High)
+        thread_data[i].model = self
+        thread_data[i].grads = make([]f32, num_grads, context.temp_allocator)
+        start := i * thread_batch_size
+        end := min(start + thread_batch_size, len(train_batch))
+        thread_data[i].batch = train_batch[start:end]
+        threads[i] = thread.create_and_start_with_poly_data(&thread_data[i], learn_proc, priority=.High)
     }
 
-    total_cost: f32 = 0
-    for t, i in threads {
-        thread.destroy(t)
-        total_cost += costs[i]
+    slice.zero(self.embedding_grads)
+
+    total_cost: f32
+    remaining := len(train_batch) - thread_batch_size * num_threads
+    if remaining > 0 {
+        grads := make([]f32, num_grads, context.temp_allocator)
+        batch := train_batch[len(train_batch)-remaining:]
+        slice.zero(grads)
+        for data_point in batch {
+            logits := forward(self^, data_point.input, context.temp_allocator)
+            total_cost += backward_into(self^, logits, data_point.input, data_point.target, grads)
+        }
+        for i in 0..<num_grads do self.embedding_grads[i] += grads[i]
     }
 
-    context_len := f32(len(train_batch[0].input))
-    scale := 1.0 / (f32(len(train_batch)) * context_len)
-    apply_gradients(self, learn_rate * scale)
+    for i in 0..<num_threads {
+        thread.destroy(threads[i])
+        total_cost += thread_data[i].total_cost
+        for j in 0..<num_grads {
+            self.embedding_grads[j] += thread_data[i].grads[j]
+        }
+    }
+
+    scale := 1.0 / f32(len(train_batch))
+    for i in 0..<len(self.embedding) {
+        self.embedding[i] += -learn_rate * self.embedding_grads[i] * scale
+    }
+
+    free_all(context.temp_allocator)
     return total_cost / f32(len(train_batch))
 }
 
 generate :: proc(self: Model, start: Token, max_tokens := 200, allocator := context.allocator) -> []Token {
-    token := start
     tokens := make([dynamic]Token, allocator)
-    append(&tokens, token)
+    append(&tokens, start)
 
     context.allocator = context.temp_allocator
+    defer free_all(context.temp_allocator)
+    token := start
     for _ in 0..<max_tokens {
         logits := forward(self, {token})
         probs := softmax(logits[0])
         token = Token(sample_multinomial(probs))
         append(&tokens, token)
     }
-    free_all(context.temp_allocator)
     return tokens[:]
 }
 
 // get a batch of input, target pairs, each of which is a view into the provided data
 get_batch :: proc(data: []Token, max_context, batch_size: int, allocator := context.allocator) -> []Data_Point {
+    context.allocator = allocator
     batch: [dynamic]Data_Point
     for i in 0..<batch_size {
         idx := rand.int_range(0, len(data) - max_context)
@@ -197,8 +211,6 @@ get_batch :: proc(data: []Token, max_context, batch_size: int, allocator := cont
 
 // returns tokens and vocab size
 get_tokens :: proc(t: bpe.Tokenizer, file: string) -> []Token {
-    tokens: []Token
-
     tokens_path := fmt.tprintf("%v.tokens", os.stem(file))
     if os.exists(tokens_path) {
         fmt.println("Loading tokens")
@@ -218,27 +230,27 @@ get_tokens :: proc(t: bpe.Tokenizer, file: string) -> []Token {
             assert(ok)
             append(&toks, Token(value))
         }
-        tokens = toks[:]
-    } else {
-        data, err := os.read_entire_file(file, context.allocator)
-        defer delete(data)
-        if err != nil {
-            fmt.panicf("Could not open '%v': %v", INPUT_FILE, err)
-        }
-        fmt.println("Encoding file")
-        vocab_size := len(t.vocab)
-        tokens = bpe.encode(t, string(data))
-        f: ^os.File
-        f, err = os.create(tokens_path)
-        defer os.close(f)
-        if err != nil {
-            fmt.panicf("Could not create '%v'", tokens_path)
-        }
-        fmt.fprintln(f, vocab_size)
-        fmt.fprint(f, tokens[0])
-        for token in tokens[1:] {
-            fmt.fprint(f, "", token)
-        }
+        return toks[:]
+    }
+
+    data, err := os.read_entire_file(file, context.allocator)
+    defer delete(data)
+    if err != nil {
+        fmt.panicf("Could not open '%v': %v", INPUT_FILE, err)
+    }
+    fmt.println("Encoding file")
+    vocab_size := len(t.vocab)
+    tokens := bpe.encode(t, string(data))
+    f: ^os.File
+    f, err = os.create(tokens_path)
+    defer os.close(f)
+    if err != nil {
+        fmt.panicf("Could not create '%v'", tokens_path)
+    }
+    fmt.fprintln(f, vocab_size)
+    fmt.fprint(f, tokens[0])
+    for token in tokens[1:] {
+        fmt.fprint(f, "", token)
     }
 
     return tokens
@@ -263,24 +275,20 @@ main :: proc() {
 
     // Hyperparams
     max_context := 8
-    batch_size := 24
-    learn_rate: f32 = 1
-    iterations := 10_000
-    num_threads := os.get_processor_core_count()
+    batch_size := 36
+    learn_rate: f32 = 20
+    iterations := 5000
+    num_threads := 6
 
     model: Model
     init(&model, vocab_size)
     defer vmem.arena_destroy(&model.arena)
 
     // Train
-    {
-        context.allocator = context.temp_allocator
-        for i in 0..<iterations {
-            batch := get_batch(train_data, max_context, batch_size)
-            cost := learn(model, batch, learn_rate, num_threads)
-            if i % 100 == 0 do fmt.printfln("%v: Cost: %v", i, cost)
-            free_all(context.temp_allocator)
-        }
+    for i in 0..<iterations {
+        batch := get_batch(train_data, max_context, batch_size, context.temp_allocator)
+        cost := learn(&model, batch, learn_rate, num_threads)
+        if i % 10 == 0 do fmt.printfln("%v: Cost: %v", i, cost)
     }
 
     generated := generate(model, Token('\n'))
