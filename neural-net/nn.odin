@@ -352,6 +352,10 @@ learn :: proc(self: ^Neural_Network, training_batch: []Data_Point, learn_rate: f
     learn_tasks := make([]Learn_Task, len(training_batch))
     defer delete(learn_tasks)
 
+    // XXX: I feel like the thread pool stuff can be improved a lot. I have tried manually spawning
+    // num_threads threads and then slicing the training batch but that didn'y seem to help.
+    // I also tried keeping a single thread pool alive during training. It is possible that I made
+    // other changes and that these actaully are improvements
     pool: thread.Pool
     thread.pool_init(&pool, context.allocator, num_threads)
     thread.pool_start(&pool)
@@ -474,6 +478,9 @@ init :: proc(self: ^Neural_Network, layer_sizes: []int, dropout: f32 = 0, config
     self.input_size = layer_sizes[0]
     self.output_size = layer_sizes[len(layer_sizes)-1]
 
+    if config.cost == .Cross_Entropy && config.output_activation != .Softmax {
+        panic("Cross Entropy must be used with a Softmax output")
+    }
     self.dropout = dropout
     self.cost = cost_from_kind(config.cost)
     self.random = random_from_kind(config.random)

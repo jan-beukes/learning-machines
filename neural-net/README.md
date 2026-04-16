@@ -1,4 +1,19 @@
-# WIP Neural network
+# Neural network "library"
+
+# TODO:
+- add random preproccessing for image data
+
+## train/view examples
+```sh
+odin build . -o:speed
+./neural-net [train] (digits|fashion|cifar)
+```
+
+## predict digits from drawing
+```sh
+odin build draw -o:speed
+./draw
+```
 
 ## example datasets
 - [Iris](archive.ics.uci.edu/dataset/53/iris)

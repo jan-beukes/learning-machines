@@ -75,11 +75,11 @@ def main():
     model = BigramLanguageModel(vocab_size).to(device)
 
     context = 8
-    batch_size = 32
-    learn_rate = 0.003
+    batch_size = 24
+    learn_rate = 0.002
     optimizer = torch.optim.AdamW(model.parameters(), lr=learn_rate)
 
-    epochs = 50_000
+    epochs = 10_000
     for i in range(epochs):
         xb, yb = get_batch(train_data, batch_size, context)
 

@@ -137,7 +137,7 @@ run_viewer :: proc(model: Neural_Network, data_set: Data_Set, kind: Data_Set_Kin
         rl.DrawTextEx(font, text, { 0.5*(f32(resx) - text_width), 10 }, font_size, 0, color)
 
         rl.EndDrawing()
-        
+
         free_all(context.temp_allocator)
     }
 }

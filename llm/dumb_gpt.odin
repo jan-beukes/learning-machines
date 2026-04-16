@@ -274,11 +274,11 @@ main :: proc() {
     fmt.println("Training")
 
     // Hyperparams
-    max_context := 8
-    batch_size := 64
-    learn_rate: f32 = 50
-    iterations := 1000
     num_threads := os.get_processor_core_count()
+    max_context := 2
+    batch_size := 4*num_threads
+    learn_rate: f32 = 40
+    iterations := 10_000
 
     model: Model
     init(&model, vocab_size)
