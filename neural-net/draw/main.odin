@@ -6,6 +6,7 @@ import "core:slice"
 import rl "vendor:raylib"
 import "vendor:raylib/rlgl"
 
+
 import nn ".."
 
 RES :: nn.MNIST_RES
@@ -77,8 +78,38 @@ create_render_texture :: proc(width, height: i32) -> rl.RenderTexture {
     return target
 }
 
-// TODO: fragment shader for input_canvas where each pixel finds it's corresponding box of pixels in
-// the original canvas and set's its value to the average
+INPUT_CANVAS_SHADER: cstring :
+`
+#version 330 
+in vec2 fragTexCoord;
+out vec4 outColor;
+
+#define RES 28
+
+uniform sampler2D texture0;
+
+void main() {
+    ivec2 size = textureSize(texture0, 0);
+    vec2 pos = fragTexCoord;
+    float boxSize = RES / float(size.x);
+    float pixelSize = boxSize / RES;
+    float sum = 0.0;
+    int count = 0;
+    for (float y = pos.y - boxSize/2.0; y < pos.y + boxSize/2; y += pixelSize) {
+        for (float x = pos.x - boxSize/2.0; x < pos.x + boxSize/2.0; x += pixelSize) {
+            if (x < 0.0 || x >= RES || y < 0.0 || y >= RES) continue;
+            vec2 pixel = vec2(x, y);
+            vec4 color = texture(texture0, pixel);
+            float avg = (color.r + color.g + color.b) / 3.0;
+            sum += avg;
+            count++;
+        }
+    }
+    float v = sum/count;
+    outColor = vec4(v, v, v, 1.0);
+}
+`
+
 
 draw_to_canvas :: proc(canvas: rl.RenderTexture, area: rl.Rectangle, brush_size: f32) -> bool {
     was_input := false
@@ -89,8 +120,16 @@ draw_to_canvas :: proc(canvas: rl.RenderTexture, area: rl.Rectangle, brush_size:
     }
     if rl.CheckCollisionPointRec(mouse_pos, area) {
         if rl.IsMouseButtonDown(.LEFT) || rl.IsMouseButtonDown(.RIGHT) {
-            color := rl.IsMouseButtonDown(.LEFT) ? rl.WHITE : rl.BLACK
             delta := rl.GetMouseDelta()
+            // This is stupid but mouse pos is not updated until the mouse moves on wayland or at
+            // least clicks on X11
+            @(static) first_input := true
+            if first_input && rl.Vector2Length(delta) > 0.0 {
+                first_input = false
+                delta = rl.Vector2(0)
+            }
+
+            color := rl.IsMouseButtonDown(.LEFT) ? rl.WHITE : rl.BLACK
             start := mouse_pos - delta
             rl.DrawLineEx(start, mouse_pos, 2*brush_size, color)
             rl.DrawCircleV(start, brush_size, color)
@@ -111,15 +150,18 @@ main :: proc() {
 
     canvas_size: i32 = 840
     rl.InitWindow(1000, canvas_size, "Neural Network")
+    rl.SetWindowMonitor(0)
     rl.ConfigFlag(.MSAA_4X_HINT)
 
     font_size: f32 = 50
     font := rl.LoadFontEx("iosevka.ttf", i32(font_size), nil, 0)
 
+    input_canvas_shader := rl.LoadShaderFromMemory(nil, INPUT_CANVAS_SHADER)
+
     draw_area := rl.Rectangle{ 0, 0, f32(canvas_size), f32(canvas_size) }
     canvas := rl.LoadRenderTexture(canvas_size, canvas_size)
     input_canvas := create_render_texture(RES, RES)
-    rl.SetTextureFilter(canvas.texture, .BILINEAR)
+    draw_input_canvas := false
 
     // how often do we classify
     update_ticks := 60
@@ -151,27 +193,38 @@ main :: proc() {
             })
         }
 
-        should_classify = draw_to_canvas(canvas, draw_area, brush_size)
+        if rl.IsKeyPressed(.SPACE) {
+            draw_input_canvas = !draw_input_canvas
+        }
+
+        should_classify = draw_to_canvas(canvas, draw_area, brush_size) || should_classify
 
         // Downscale canvas to input texture
         rl.BeginTextureMode(input_canvas)
+        rl.BeginShaderMode(input_canvas_shader)
         src := rl.Rectangle{ 0, 0, f32(canvas.texture.width), f32(canvas.texture.height) }
         dst := rl.Rectangle{ 0, 0, f32(input_canvas.texture.width), f32(input_canvas.texture.height) }
         rl.DrawTexturePro(canvas.texture, src, dst, {}, 0, rl.WHITE)
+        rl.EndShaderMode()
         rl.EndTextureMode()
 
         // Draw to screen
         rl.BeginDrawing()
         rl.ClearBackground(rl.BLACK)
-        src = rl.Rectangle{ 0, 0, f32(canvas.texture.width), -f32(canvas.texture.height) }
-        rl.DrawTexturePro(canvas.texture, src, draw_area, {}, 0, rl.WHITE)
+        if draw_input_canvas {
+            src = rl.Rectangle{ 0, 0, f32(input_canvas.texture.width), f32(input_canvas.texture.height) }
+            rl.DrawTexturePro(input_canvas.texture, src, draw_area, {}, 0, rl.WHITE)
+        } else {
+            src = rl.Rectangle{ 0, 0, f32(canvas.texture.width), -f32(canvas.texture.height) }
+            rl.DrawTexturePro(canvas.texture, src, draw_area, {}, 0, rl.WHITE)
+        }
         rl.DrawRectangleLinesEx(draw_area, 10, rl.GRAY)
 
         // Draw predictions
         step := font_size + 10
         cursor := step
         for p, i in predictions {
-            text := rl.TextFormat("%d (%.1f)", p.label, p.confidence)
+            text := rl.TextFormat("%d %2.0f%%", p.label, 100*p.confidence)
             color := i == 0 ? rl.GREEN : rl.GRAY
             rl.DrawTextEx(font, text, {f32(canvas_size) + 10, cursor}, font_size, 0, color)
             cursor += font_size + 10
