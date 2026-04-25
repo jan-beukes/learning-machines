@@ -5,44 +5,28 @@ const print = std.debug.print;
 const Vec3 = rl.Vector3;
 const Allocator = std.mem.Allocator;
 
-const fade_vert_src =
-\\#version 330
-\\in vec3 vertexPosition;
-\\in vec4 vertexColor;
-\\out vec3 fragPosition;
-\\out vec4 fragColor;
-\\uniform mat4 matModel;
-\\uniform mat4 mvp;
-\\void main() {
-\\  fragColor = vertexColor;
-\\  fragPosition = vec3(matModel*vec4(vertexPosition, 1.0));
-\\  gl_Position = mvp*vec4(vertexPosition, 1.0);
-\\}
-;
+fn drawAxis(sz: f32) void {
+    const radius = 0.008;
+    const rings = 40;
+    const slices = 2;
+    rl.drawCapsule(.init(-sz, 0, 0), .init(sz, 0, 0), radius, rings, slices, .red);
+    rl.drawCapsule(.init(0, -sz, 0), .init(0, sz, 0), radius, rings, slices, .green);
+    rl.drawCapsule(.init(0, 0, -sz), .init(0, 0, sz), radius, rings, slices, .blue);
+}
 
-const fade_frag_src =
-\\#version 330
-\\in vec3 fragPosition;
-\\in vec4 fragColor;
-\\out vec4 finalColor;
-\\
-\\uniform float fadeDistance;
-\\
-\\void main() {
-\\    float dist = length(fragPosition);
-\\    float alpha = 1.0 - smoothstep(0.0, fadeDistance, dist);
-\\    finalColor = vec4(fragColor.rgb, fragColor.a * alpha);
-\\}
-;
-
-fn drawAxis(size: f32) void {
-    rl.drawLine3D(.init(-size, 0, 0), .init(size, 0, 0), .red);
-    rl.drawLine3D(.init(0, -size, 0), .init(0, size, 0), .green);
-    rl.drawLine3D(.init(0, 0, -size), .init(0, 0, size), .blue);
+/// Phi and theta are in degrees
+fn spherical_to_cartesian(r: f32, phi: f32, theta: f32) Vec3 {
+    const phi_rad = std.math.degreesToRadians(phi);
+    const theta_rad = std.math.degreesToRadians(theta);
+    return .{
+        .x = r * @sin(theta_rad) * @sin(phi_rad),
+        .y = r * @cos(theta_rad),
+        .z = r * @sin(theta_rad) * @cos(phi_rad),
+    };
 }
 
 /// perform kmeans clustering and return the class labels for the classes
-const epsilon: f32 = 1e-4;
+const epsilon: f32 = 1e-5;
 fn kmeansIteration(points: []Vec3, k: usize, means: []Vec3, labels: []usize) bool {
     for (0..labels.len) |i| {
         const p = points[i];
@@ -81,7 +65,7 @@ fn kmeansIteration(points: []Vec3, k: usize, means: []Vec3, labels: []usize) boo
 
 fn kmeansInitialize(points: []Vec3, means: []Vec3, labels: []usize, rand: std.Random) void {
     for (means) |*mean| {
-        const idx = rand.uintAtMost(usize, means.len - 1);
+        const idx = rand.uintAtMost(usize, points.len - 1);
         mean.* = points[idx];
     }
     @memset(labels, 0);
@@ -144,13 +128,7 @@ fn runKmeans(rand: std.Random, alloc: Allocator, arena: *std.heap.ArenaAllocator
     rl.initWindow(800, 800, "clustering");
     defer rl.closeWindow();
 
-    // Axis fade shader
-    const fade_shader = try rl.loadShaderFromMemory(fade_vert_src, fade_frag_src);
-    defer fade_shader.unload();
-
     const axis_length: f32 = 1000.0;
-    const fade_distance_loc = rl.getShaderLocation(fade_shader, "fadeDistance");
-    rl.setShaderValue(fade_shader, fade_distance_loc, &axis_length, .float);
 
     const point_count = 100;
     const point_radius = 0.1;
@@ -176,9 +154,11 @@ fn runKmeans(rand: std.Random, alloc: Allocator, arena: *std.heap.ArenaAllocator
     randomColors(colors, rand);
 
     // Camera state
-    const start_pos = Vec3.init(10, 10, 10);
+    var radius: f32 = 10;
+    var theta: f32 = 45;
+    var phi: f32 = 45;
     var camera = rl.Camera{
-        .position = start_pos,
+        .position = spherical_to_cartesian(radius, phi, theta),
         .target = .init(0, 0, 0),
         .up = .init(0, 1, 0),
         .fovy = 45,
@@ -186,38 +166,27 @@ fn runKmeans(rand: std.Random, alloc: Allocator, arena: *std.heap.ArenaAllocator
     };
 
     rl.setTargetFPS(144);
-    var up = camera.up.normalize();
-    var forward = camera.target.subtract(camera.position).normalize();
-    var right = forward.crossProduct(up).normalize();
-
     var converged = false;
     var iteration: u32 = 0;
+
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
         _ = dt;
         const scroll = rl.getMouseWheelMove();
         if (scroll != 0) {
-            const move = scroll * 2;
-            const dir = camera.position.subtract(camera.target).normalize();
-            const pos = camera.position.subtract(dir.scale(move));
-            if (pos.distance(camera.target) > 2) {
-                camera.position = pos;
-            }
+            var move = 0.2 * radius; 
+            if (scroll > 0) move *= -1;
+            radius = @max(0.2, radius + move);
+            camera.position = spherical_to_cartesian(radius, phi, theta);
         }
 
         if (rl.isMouseButtonDown(.left)) {
             var delta = rl.getMouseDelta();
-            delta = delta.scale(0.2);
-            const yaw = -std.math.degreesToRadians(delta.x);
-            const pitch = -std.math.degreesToRadians(delta.y);
-
-            var rotation = rl.Matrix.rotate(right, pitch);
-            rotation = rotation.multiply(.rotate(up, yaw));
-            // rotate the camera position and orientation vectors
-            camera.position = camera.position.transform(rotation);
-            up = up.transform(rotation);
-            forward = forward.transform(rotation);
-            right = right.transform(rotation);
+            delta = delta.scale(0.08);
+            theta -= delta.y;
+            phi -= delta.x;
+            theta = std.math.clamp(theta, 1, 179);
+            camera.position = spherical_to_cartesian(radius, phi, theta);
         }
 
         if (rl.isKeyPressed(.space) and !converged) {
@@ -232,21 +201,18 @@ fn runKmeans(rand: std.Random, alloc: Allocator, arena: *std.heap.ArenaAllocator
             converged = false;
         } else if (rl.isKeyPressed(.r)) {
             // reset position
-            camera.position = start_pos;
-            up = camera.up.normalize();
-            forward = camera.target.subtract(camera.position).normalize();
-            right = forward.crossProduct(up).normalize();
+            phi = 45;
+            theta = 45;
+            camera.position = spherical_to_cartesian(radius, phi, theta);
         }
 
         // Rendering
         rl.beginDrawing();
         rl.clearBackground(.black);
 
-        fade_shader.activate();
         camera.begin();
         drawAxis(axis_length);
         camera.end();
-        fade_shader.deactivate();
 
 
         camera.begin();

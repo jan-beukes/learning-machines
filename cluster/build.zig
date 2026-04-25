@@ -7,16 +7,15 @@ pub fn build(b: *std.Build) void {
     const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
         .optimize = optimize,
+        .linkage = .dynamic,
     });
     const raylib = raylib_dep.module("raylib");
     const libraylib = raylib_dep.artifact("raylib");
 
     const exe = b.addExecutable(.{
         .name = "cluster",
+        .use_llvm = true,
         .root_module = b.createModule(.{
-            // b.createModule defines a new module just like b.addModule but,
-            // unlike b.addModule, it does not expose the module to consumers of
-            // this package, which is why in this case we don't have to give it a name.
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
