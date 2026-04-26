@@ -15,7 +15,6 @@ Prediction :: struct {
     confidence: f32,
 }
 
-// TODO: randomly augment the images and train that mf
 train_mnist :: proc(model: ^nn.Neural_Network) {
     train_set, test_set := nn.load_mnist("digits-mnist")
     defer {
@@ -169,7 +168,7 @@ main :: proc() {
     last_tick: f64
     should_classify := true
 
-    brush_size: f32 = 30
+    brush_size: f32 = 26
     predictions: [10]Prediction
     for i in 0..=9 {
         predictions[i].label = i

@@ -29,6 +29,7 @@ Layer :: struct {
     bias_v: []f32,
 
     disabled: []bool, // used during dropout
+    mutex: sync.Mutex,
     activation: Activation,
 }
 
@@ -40,6 +41,7 @@ Neural_Network :: struct {
     training_iterations: int,
     random: Random,
     cost: Cost,
+    lock: bool,
 
     arena: vmem.Arena `cbor:"-"`,
 }
@@ -53,7 +55,6 @@ Learn_Data :: struct {
     // This name is just what Sebastian Lague called it idk what else to call it
     node_values: []f32, // da(i)/dz(i) * dc/da(i) * ... da(L)/dz(L) * dc/da(L)
 }
-
 
 Data_Point :: struct {
     input: []f32,
@@ -152,9 +153,10 @@ layer_init :: proc(self: ^Layer, num_in: int, num_out: int,
 }
 
 // update the layer's gradients
-layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
+layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data, lock: bool) {
     //XXX: We have no lock since it is major performace boost to just embrace the race conditions
     // idk if this is cooked but it mostly works
+    if lock do sync.lock(&self.mutex)
     for neuron in 0..<self.num_out {
         if self.disabled[neuron] do continue
         for j in 0..<self.num_in {
@@ -163,6 +165,7 @@ layer_update_gradients :: proc(self: ^Layer, layer_learn: Learn_Data) {
         }
         self.bias_grads[neuron] += layer_learn.node_values[neuron]
     }
+    if lock do sync.unlock(&self.mutex)
 }
 
 // regularization comes from adding λ/2n * sum(w^2) to the cost function to prevent large weights
@@ -229,7 +232,7 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
         activation_derivative := last_layer.activation.derivative(last_layer_learn.weighted_inputs, i)
         last_layer_learn.node_values[i] = activation_derivative * cost_derivative 
     }
-    layer_update_gradients(last_layer, last_layer_learn)
+    layer_update_gradients(last_layer, last_layer_learn, self.lock)
 
     // Hidden Layers
     old_node_values := last_layer_learn.node_values
@@ -253,7 +256,7 @@ update_gradients :: proc(self: Neural_Network, expected: []f32, learn_data: []Le
             layer_learn.node_values[i] = node_value
         }
         // update the layer's gradients
-        layer_update_gradients(layer, layer_learn)
+        layer_update_gradients(layer, layer_learn, self.lock)
 
         old_node_values = layer_learn.node_values
     }
@@ -337,6 +340,7 @@ forward_no_learn :: proc(self: Neural_Network, input: []f32, allocator := contex
 learn_task_proc :: proc(task: thread.Task) {
     task_data := cast(^Learn_Task)task.data
     network := task_data.network
+
     data_point := task_data.data_point
     learn_data := learn_data_create(network.layers)
     forward(network, data_point.input, learn_data)
@@ -470,10 +474,11 @@ load_from_file :: proc(path: string) -> (network: Neural_Network, err: Error) {
 
 // Initialize a neural network with the given layer sizes and config
 // The first size will be of the input
-init :: proc(self: ^Neural_Network, layer_sizes: []int, dropout: f32 = 0, config: Config = DEFAULT_CONFIG) {
+init :: proc(self: ^Neural_Network, layer_sizes: []int, dropout: f32 = 0, lock := false, config: Config = DEFAULT_CONFIG) {
     config := config
     context.allocator = vmem.arena_allocator(&self.arena)
 
+    self.lock = lock
     self.largest_layer_size = slice.max(layer_sizes)
     self.input_size = layer_sizes[0]
     self.output_size = layer_sizes[len(layer_sizes)-1]

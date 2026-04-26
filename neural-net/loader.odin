@@ -4,6 +4,8 @@ import "core:fmt"
 import "core:strings"
 import "core:strconv"
 import "core:bytes"
+import "core:math"
+import "core:math/rand"
 import "core:slice"
 import "core:os"
 
@@ -208,4 +210,85 @@ load_mnist :: proc(dir: string, allocator := context.allocator) -> (Data_Set, Da
 
     free_all(context.temp_allocator)
     return train_set, test_set
+}
+
+// This too is taken from the goat Sebastian after my idea sucked
+sample :: proc(pixels: []f32, u, v: f32, w, h: int) -> f32 {
+    u := math.max(0, math.min(1, u))
+    v := math.max(0, math.min(1, v))
+    x := u * f32(w - 1)
+    y := v * f32(h - 1)
+
+    idx_left := int(x)
+    idx_top := int(y)
+    idx_right := math.min(idx_left + 1, w - 1)
+    idx_bottom := math.min(idx_top + 1, h - 1)
+
+    blend_x := x - f32(idx_left)
+    blend_y := y - f32(idx_top)
+
+    bl := pixels[idx_bottom*w + idx_left]
+    br := pixels[idx_bottom*w + idx_right]
+    tl := pixels[idx_top*w + idx_left]
+    tr := pixels[idx_top*w + idx_right]
+
+    value_bottom := bl + (br - bl) * blend_x
+    value_top := tl + (tr - tl) * blend_x
+    value := value_top + (value_bottom - value_top) * blend_y
+    return value
+}
+
+// expect single channel float pixels
+random_process_images :: proc(data: []Data_Point, width: int, height: int) {
+    ROTATE_RANGE :: 0.15
+    SCALE_RANGE :: 0.4
+    OFFSET_AMMOUNT :: 0.8
+
+    process_pixels := make([]f32, len(data[0].input), context.allocator)
+    defer delete(process_pixels)
+    assert(width * height == len(process_pixels))
+    for data_point in data {
+        pixels := data_point.input
+        scale: f32 = rand.float32_normal(1, SCALE_RANGE)
+        rotation: f32 = rand.float32_normal(0, ROTATE_RANGE)
+
+        // get the maximum offset we can go in each direction while keeping image on screen
+        // then random lerp between them
+        bounds_minx := width
+        bounds_maxx := 0
+        bounds_miny := height
+        bounds_maxy := 0
+        for y in 0..<height {
+            for x in 0..<width {
+                if pixels[y*width + x] > 0 {
+                    bounds_minx = math.min(bounds_minx, x)
+                    bounds_maxx = math.max(bounds_maxx, x)
+                    bounds_miny = math.min(bounds_miny, y)
+                    bounds_maxy = math.max(bounds_maxy, y)
+                }
+            }
+        }
+        offset_minx := -f32(bounds_minx) / f32(width)
+        offset_maxx := f32(width - bounds_maxx) / f32(width)
+        offset_miny := -f32(bounds_miny) / f32(height)
+        offset_maxy := f32(height - bounds_maxy) / f32(height)
+        offset_x := math.lerp(offset_minx, offset_maxx, rand.float32()) * OFFSET_AMMOUNT
+        offset_y := math.lerp(offset_miny, offset_maxy, rand.float32()) * OFFSET_AMMOUNT
+
+        for y in 0..<height {
+            for x in 0..<width {
+                ihat: [2]f32 = { math.cos(rotation), math.sin(rotation) }
+                jhat: [2]f32 = { -ihat.y, ihat.x }
+
+                u := f32(x) / (f32(width) - 1)
+                v := f32(y) / (f32(height) - 1)
+                u = ihat.x * (u - 0.5) + jhat.x * (v - 0.5) + 0.5 - offset_x
+                v = ihat.y * (u - 0.5) + jhat.y * (v - 0.5) + 0.5 - offset_y
+                pixel_value := sample(pixels, u, v, width, height)
+                process_pixels[y*width + x] = math.clamp(pixel_value, 0, 1)
+            }
+        }
+        copy(data_point.input, process_pixels)
+        slice.zero(process_pixels)
+    }
 }
