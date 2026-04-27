@@ -241,7 +241,7 @@ sample :: proc(pixels: []f32, u, v: f32, w, h: int) -> f32 {
 // expect single channel float pixels
 random_process_images :: proc(data: []Data_Point, width: int, height: int) {
     ROTATE_RANGE :: 0.15
-    SCALE_RANGE :: 0.4
+    SCALE_RANGE :: 0.15
     OFFSET_AMMOUNT :: 0.8
 
     process_pixels := make([]f32, len(data[0].input), context.allocator)
@@ -277,7 +277,7 @@ random_process_images :: proc(data: []Data_Point, width: int, height: int) {
 
         for y in 0..<height {
             for x in 0..<width {
-                ihat: [2]f32 = { math.cos(rotation), math.sin(rotation) }
+                ihat: [2]f32 = { math.cos(rotation), math.sin(rotation) } / scale
                 jhat: [2]f32 = { -ihat.y, ihat.x }
 
                 u := f32(x) / (f32(width) - 1)
