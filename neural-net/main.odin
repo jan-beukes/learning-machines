@@ -185,8 +185,10 @@ main :: proc() {
         if data_set_kind == .Fashion {
             test_set.classes = FASHION_MNIST_CLASSES
         } else {
-            random_process_images(train_set.data, MNIST_RES, MNIST_RES)
-            random_process_images(test_set.data, MNIST_RES, MNIST_RES)
+            random_process_images(&train_set, MNIST_RES, MNIST_RES)
+            random_process_images(&test_set, MNIST_RES, MNIST_RES, false)
+            fmt.println("Train:", len(train_set.data))
+            fmt.println("Test:", len(test_set.data))
         }
     case .Cifar:
         train_set, test_set = load_cifar(data_set_dir)
@@ -211,17 +213,17 @@ main :: proc() {
         log.info("Training Network")
         // params
         config := Config{ .Cross_Entropy, .Sigmoid, .Softmax, .Gaussian }
-        layers := []int{ train_set.input_size, 200, train_set.output_size }
-        init(&model, layers, dropout = 0.6, config = config)
+        layers := []int{ train_set.input_size, 256, 100, train_set.output_size }
+        init(&model, layers, dropout = 0.5, config = config)
         num_threads := os.get_processor_core_count()
-        train_split: f32 = 0.90
-        mini_batch_size := 32
-        learn_rate: f32 = 0.2
-        regularization: f32 = 0.005
+        train_split: f32 = 0.92
+        mini_batch_size := 256
+        learn_rate: f32 = 0.4
+        regularization: f32 = 0.03
         // decay rates for moving averages
         beta1: f32 = 0.9
         beta2: f32 = 0.999
-        epochs := 100
+        epochs := 50
 
         train_file, err := os.create("train.txt")
         defer os.close(train_file)
