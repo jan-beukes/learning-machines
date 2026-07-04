@@ -1,8 +1,5 @@
 # Neural network "library"
 
-# TODO:
-- add random preproccessing for image data
-
 ## train/view examples
 ```sh
 odin build . -o:speed

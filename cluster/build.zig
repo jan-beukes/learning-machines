@@ -7,7 +7,6 @@ pub fn build(b: *std.Build) void {
     const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
         .optimize = optimize,
-        .linkage = .dynamic,
     });
     const raylib = raylib_dep.module("raylib");
     const libraylib = raylib_dep.artifact("raylib");
@@ -15,6 +14,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "cluster",
         .use_llvm = true,
+        .use_lld = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,

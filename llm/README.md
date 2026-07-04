@@ -1,5 +1,3 @@
-This sucks
-
 # References
 
 https://a.co/d/02klult3

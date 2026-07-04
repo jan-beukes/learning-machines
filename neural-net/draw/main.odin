@@ -3,9 +3,8 @@ package draw
 import "core:fmt"
 import "core:os"
 import "core:slice"
-import rl "vendor:raylib"
-import "vendor:raylib/rlgl"
-
+import rl "vendor:raylib/v6"
+import "vendor:raylib/v6/rlgl"
 
 import nn ".."
 

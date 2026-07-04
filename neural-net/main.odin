@@ -9,7 +9,7 @@ import "core:slice"
 import "core:strings"
 import "core:strconv"
 
-import rl "vendor:raylib"
+import rl "vendor:raylib/v6"
 
 Data_Set_Kind :: enum {
     Digits,
